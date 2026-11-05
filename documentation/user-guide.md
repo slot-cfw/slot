@@ -471,7 +471,7 @@ All of a download's files are in its `System` folder: the slot.advance program (
 
 **Complete rollback (recommended).** This puts every program file back to the earlier release.
 
-1. Download the earlier release from the [releases page](https://github.com/suprsomething/slot.advance/releases) and unzip it.
+1. Download the earlier release from the [releases page](https://github.com/slowphase/slot.advance/releases) and unzip it.
 2. Power off the RG SP (2026) and put the games card (SD2) in your computer.
 3. Open the download's `System` folder, select **everything inside it** and drag it into the `System` folder on the card. When asked, choose **Replace**.
 4. Eject the card, put it back, and power on.
@@ -546,7 +546,7 @@ Releases before 0.5.0 have no Wi-Fi menu or Syncthing. Going back to one leaves 
 
 1. **Don't power on again yet.** `slot.log` and `slot.log.1` are replaced each time slot.advance starts, so the record of the problem is on the card only until the next start or two.
 2. Power off, take the games card (SD2) out and put it in your computer. Copy `slot.log` and `slot.log.1` from the top of the card somewhere safe. If there is a `crash` folder, copy `crash/cores.log` and the newest `crash/slot-….log` too. For a Syncthing problem, also copy `Config/syncthing/syncthing.log`.
-3. [Open an issue](https://github.com/suprsomething/slot.advance/issues/new/choose) and choose **Bug report**. Say which version you're on (the first line of `slot.log`), what you were doing and what you saw, then drag the log files into the issue. Leave out `crash/slot.core`: it is large, and only needed if asked for. Never attach `Config/wifi.txt` or other files from `Config/syncthing/`: they hold your network keys and Syncthing's private keys. `slot.log` names the Wi-Fi networks you joined, but never their passwords.
+3. [Open an issue](https://github.com/slowphase/slot.advance/issues/new/choose) and choose **Bug report**. Say which version you're on (the first line of `slot.log`), what you were doing and what you saw, then drag the log files into the issue. Leave out `crash/slot.core`: it is large, and only needed if asked for. Never attach `Config/wifi.txt` or other files from `Config/syncthing/`: they hold your network keys and Syncthing's private keys. `slot.log` names the Wi-Fi networks you joined, but never their passwords.
 
 ---
 

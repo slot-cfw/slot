@@ -6,16 +6,16 @@
 
 **A Game Boy Advance focused build of [slot](https://github.com/BrandonKowalski/slot) for the Anbernic RG SP (2026).**
 
-<a href="LICENSE"><img src="https://img.shields.io/github/license/suprsomething/slot.advance?style=for-the-badge&labelColor=242429&color=4d4d57" height="32" alt="License: GPL-3.0"></a>
+<a href="LICENSE"><img src="https://img.shields.io/github/license/slowphase/slot.advance?style=for-the-badge&labelColor=242429&color=4d4d57" height="32" alt="License: GPL-3.0"></a>
 <a href="https://github.com/BrandonKowalski/slot"><img src="https://img.shields.io/badge/Based_on-slot-4d4d57?style=for-the-badge&labelColor=242429" height="32" alt="Based on slot"></a>
-<a href="https://github.com/suprsomething/slot.advance/releases"><img src="https://img.shields.io/github/downloads/suprsomething/slot.advance/total?style=for-the-badge&labelColor=242429&color=4d4d57" height="32" alt="Downloads"></a>
+<a href="https://github.com/slowphase/slot.advance/releases"><img src="https://img.shields.io/github/downloads/slowphase/slot.advance/total?style=for-the-badge&labelColor=242429&color=4d4d57" height="32" alt="Downloads"></a>
 
 </div>
 
 > [!IMPORTANT]
 > **Supported device: Anbernic RG SP (2026) only**: the clamshell model with the 720 x 480 display. Not compatible with the older RG35XX SP. For that model or any other Anbernic device, use upstream [slot](https://github.com/BrandonKowalski/slot).
 
-**Latest release: [slot.advance 0.5.0](https://github.com/suprsomething/slot.advance/releases/latest)** · **[Download&nbsp;ZIP](https://github.com/suprsomething/slot.advance/releases/download/advance-0.5.0/slot.advance-0.5.0-rg-sp.zip)**
+**Latest release: [slot.advance 0.5.0](https://github.com/slowphase/slot.advance/releases/latest)** · **[Download&nbsp;ZIP](https://github.com/slowphase/slot.advance/releases/download/advance-0.5.0/slot.advance-0.5.0-rg-sp.zip)**
 
 [Install](#installing-and-updating) · [User guide](documentation/user-guide.md) · [Release notes](documentation/release-notes.md) · [Website](https://slotadvance.com)
 
@@ -117,7 +117,7 @@ Every control and setting is in the **[User guide](documentation/user-guide.md)*
 - **Screen still dark after a quick lid flick?** Close the lid and open it again. Your game carries on.
 - **Red "Can't write to SD card" band?** That game isn't being saved. Stop playing it and see [what to do](documentation/user-guide.md#when-a-save-cant-be-read).
 - **A synced save seems older than expected?** Look for a Syncthing conflict copy beside it. [Details](documentation/user-guide.md#file-times-and-conflict-copies).
-- **Found a bug?** Before you power on again, copy `slot.log` and `slot.log.1` from the games card, plus `crash/cores.log` and the newest `crash/slot-….log` if there is a `crash/` folder. The next start-up replaces the logs. Then [open an issue](https://github.com/suprsomething/slot.advance/issues/new/choose). The full steps, troubleshooting and known limitations are in the [User guide](documentation/user-guide.md#troubleshooting).
+- **Found a bug?** Before you power on again, copy `slot.log` and `slot.log.1` from the games card, plus `crash/cores.log` and the newest `crash/slot-….log` if there is a `crash/` folder. The next start-up replaces the logs. Then [open an issue](https://github.com/slowphase/slot.advance/issues/new/choose). The full steps, troubleshooting and known limitations are in the [User guide](documentation/user-guide.md#troubleshooting).
 
 ---
 
@@ -127,7 +127,7 @@ Every control and setting is in the **[User guide](documentation/user-guide.md)*
 
 **For developers:** [Technical reference](documentation/technical.md) · [Sleep and battery measurements](documentation/sleep-and-battery.md) · [Building](documentation/building.md)
 
-This build: **0.5.0** · [All releases](https://github.com/suprsomething/slot.advance/releases)
+This build: **0.5.0** · [All releases](https://github.com/slowphase/slot.advance/releases)
 
 ---
 

@@ -1,11 +1,11 @@
-slot.advance 0.4.0 for the Anbernic RG SP (2026) (720 x 480). It is not for the RG35XX SP. The previous release is [slot.advance 0.3.0](https://github.com/suprsomething/slot.advance/releases/tag/advance-v3).
+slot.advance 0.4.0 for the Anbernic RG SP (2026) (720 x 480). It is not for the RG35XX SP. The previous release is [slot.advance 0.3.0](https://github.com/slowphase/slot.advance/releases/tag/advance-v3).
 
-**Upgrading:** download `slot.advance-0.4.0-rg-sp.zip`, unzip it, and copy the contents of its `System` folder into `System` on your games card (SD2), as in the README's [upgrade steps](https://github.com/suprsomething/slot.advance#installing-and-updating). Your games, saves, states and settings are not touched. **New install:** follow the README's [new install steps](https://github.com/suprsomething/slot.advance#new-install).
+**Upgrading:** download `slot.advance-0.4.0-rg-sp.zip`, unzip it, and copy the contents of its `System` folder into `System` on your games card (SD2), as in the README's [upgrade steps](https://github.com/slowphase/slot.advance#installing-and-updating). Your games, saves, states and settings are not touched. **New install:** follow the README's [new install steps](https://github.com/slowphase/slot.advance#new-install).
 
 ### New in 0.4.0
 - **Real hardware sleep.** Closing the lid saves the game, then suspends the RG SP (2026) to RAM. Opening the lid carries on from the same moment, with nothing reloaded.
 - **Settings > Sleep:** `3 min`, `15 min`, `30 min` (default), `1 hr`, `2 hr`, `8 hr`. When the time runs out with the lid shut, it shuts down cleanly and the next power-on restores the game.
-- **Battery:** six unused USB host controllers and Wi-Fi are switched off. Link play needs `wifi=on` in `Config/slot.state`. Lid-closed standby current fell by about 72% (about 250 mA to about 70 mA). Asleep, the battery gauge showed about 2 to 2.6% an hour over two overnight sleeps: 98% to 82% in 8 hours on 0.4.0-beta.3, and 94% to 74% in 7 hours 46 minutes on 0.4.0. [How it was measured](https://github.com/suprsomething/slot.advance/blob/main/documentation/sleep-and-battery.md).
+- **Battery:** six unused USB host controllers and Wi-Fi are switched off. Link play needs `wifi=on` in `Config/slot.state`. Lid-closed standby current fell by about 72% (about 250 mA to about 70 mA). Asleep, the battery gauge showed about 2 to 2.6% an hour over two overnight sleeps: 98% to 82% in 8 hours on 0.4.0-beta.3, and 94% to 74% in 7 hours 46 minutes on 0.4.0. [How it was measured](https://github.com/slowphase/slot.advance/blob/main/documentation/sleep-and-battery.md).
 - **Optional game titles:** Settings > Screen > Show Game Titles (off by default).
 - **About screen** with the version, the number of games, free space on the games card, the battery, slotadvance.com and the credits.
 - A game that could not be saved when the lid closed is never shut down by the sleep timer.
@@ -15,6 +15,6 @@ slot.advance 0.4.0 for the Anbernic RG SP (2026) (720 x 480). It is not for the 
 ### Known limitation
 Rapidly flicking the lid closed and open can occasionally leave the screen dark with the lid open. Deliberate stress testing reproduced this in both 0.4.0 and 0.4.1. Normal wake behaviour is unaffected, and closing and reopening the lid restores the game without losing progress.
 
-If anything goes wrong, copy `slot.log` and `slot.log.1` from the games card before powering on again, and [open a bug report](https://github.com/suprsomething/slot.advance/issues/new/choose) with both files attached.
+If anything goes wrong, copy `slot.log` and `slot.log.1` from the games card before powering on again, and [open a bug report](https://github.com/slowphase/slot.advance/issues/new/choose) with both files attached.
 
-Emulation by mGBA (MPL-2.0) and gpSP (GPL-2.0). Their licences, patches and gpSP's source are in `System/licenses/`. slot.advance is GPL-3.0, based on [slot](https://github.com/BrandonKowalski/slot) by Brandon T. Kowalski. [Full release notes](https://github.com/suprsomething/slot.advance/blob/main/documentation/release-notes.md).
+Emulation by mGBA (MPL-2.0) and gpSP (GPL-2.0). Their licences, patches and gpSP's source are in `System/licenses/`. slot.advance is GPL-3.0, based on [slot](https://github.com/BrandonKowalski/slot) by Brandon T. Kowalski. [Full release notes](https://github.com/slowphase/slot.advance/blob/main/documentation/release-notes.md).

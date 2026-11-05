@@ -101,7 +101,7 @@ For the release page, use `documentation/releases/advance-0.5.0.md`. For a short
 >
 > It also brings save-safety fixes from upstream slot, including one for games with a 128 KB flash save, such as the Game Boy Advance Pokémon games. With Wi-Fi off, sleep and battery work as in 0.4.2. To upgrade, copy the contents of the download's `System` folder into the existing `System` folder on your games card, replacing files when asked. Don't replace the `System` folder itself.
 >
-> Download and release notes: https://github.com/suprsomething/slot.advance/releases/tag/advance-0.5.0 · https://slotadvance.com
+> Download and release notes: https://github.com/slowphase/slot.advance/releases/tag/advance-0.5.0 · https://slotadvance.com
 >
 > slot.advance is a GBA-focused fork of slot by Brandon T. Kowalski.
 

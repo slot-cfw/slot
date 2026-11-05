@@ -22,7 +22,7 @@ The version and Git commit a build came from are written as the first line of `s
 
 ## 0.5.0 (current release)
 
-Tag `advance-0.5.0`. Download: `slot.advance-0.5.0-rg-sp.zip` from the [release page](https://github.com/suprsomething/slot.advance/releases/tag/advance-0.5.0). [Report problems](https://github.com/suprsomething/slot.advance/issues/new/choose), attaching `slot.log` and `slot.log.1` if you can.
+Tag `advance-0.5.0`. Download: `slot.advance-0.5.0-rg-sp.zip` from the [release page](https://github.com/slowphase/slot.advance/releases/tag/advance-0.5.0). [Report problems](https://github.com/slowphase/slot.advance/issues/new/choose), attaching `slot.log` and `slot.log.1` if you can.
 
 Optional Wi-Fi, Syncthing for Saves and States, an in-game menu, and fixes that protect your saves. With Wi-Fi off, the default, sleep, wake and battery use work as in 0.4.2.
 
@@ -73,7 +73,7 @@ Optional Wi-Fi, Syncthing for Saves and States, an in-game menu, and fixes that 
 
 ## 0.4.2 (superseded by 0.5.0)
 
-Tag `advance-0.4.2`. Download: `slot.advance-0.4.2-rg-sp.zip` from the [release page](https://github.com/suprsomething/slot.advance/releases/tag/advance-0.4.2). [Report problems](https://github.com/suprsomething/slot.advance/issues/new/choose), attaching `slot.log` and `slot.log.1` if you can.
+Tag `advance-0.4.2`. Download: `slot.advance-0.4.2-rg-sp.zip` from the [release page](https://github.com/slowphase/slot.advance/releases/tag/advance-0.4.2). [Report problems](https://github.com/slowphase/slot.advance/issues/new/choose), attaching `slot.log` and `slot.log.1` if you can.
 
 A maintenance release: fixes taken from upstream slot, each checked against slot.advance and adapted where needed. Nothing in it touches sleep, wake, the lid, the RTC timer, Wi-Fi, USB or power management.
 
@@ -103,7 +103,7 @@ The muted-play fix is upstream's; on the RG SP no stutter was seen with it, but 
 
 ## 0.4.1 (superseded by 0.4.2)
 
-Tag `advance-0.4.1`. Download: `slot.advance-0.4.1-rg-sp.zip` from the [release page](https://github.com/suprsomething/slot.advance/releases/tag/advance-0.4.1). [Report problems](https://github.com/suprsomething/slot.advance/issues/new/choose), attaching `slot.log` and `slot.log.1` if you can.
+Tag `advance-0.4.1`. Download: `slot.advance-0.4.1-rg-sp.zip` from the [release page](https://github.com/slowphase/slot.advance/releases/tag/advance-0.4.1). [Report problems](https://github.com/slowphase/slot.advance/issues/new/choose), attaching `slot.log` and `slot.log.1` if you can.
 
 **35% less resume time, with Wi-Fi off.** After a lid wake, the game's first frame now appears a median of 808 ms after the kernel's first logged resume marker, against 1,251 ms in 0.4.0: 443 ms sooner, 35.4% less measured time. The time runs from that marker to the first rendered frame, from the kernel's own log (11 wakes on 0.4.1-beta.1, 803 to 828 ms; 10 on 0.4.0, 1,236 to 1,270 ms). It leaves out the unlogged moment the lid starts to open, and it isn't the kernel's total device-resume time. 0.4.1-beta.1 has the same runtime source as 0.4.1 apart from the version.
 
@@ -123,7 +123,7 @@ Tag `advance-0.4.1`. Download: `slot.advance-0.4.1-rg-sp.zip` from the [release 
 
 ## 0.4.0 (superseded by 0.4.1)
 
-Tag `advance-0.4.0`. Download: `slot.advance-0.4.0-rg-sp.zip` from the [release page](https://github.com/suprsomething/slot.advance/releases/tag/advance-0.4.0). [Report problems](https://github.com/suprsomething/slot.advance/issues/new/choose), attaching `slot.log` and `slot.log.1` if you can.
+Tag `advance-0.4.0`. Download: `slot.advance-0.4.0-rg-sp.zip` from the [release page](https://github.com/slowphase/slot.advance/releases/tag/advance-0.4.0). [Report problems](https://github.com/slowphase/slot.advance/issues/new/choose), attaching `slot.log` and `slot.log.1` if you can.
 
 0.4.0 is 0.4.0-beta.3's code with a new About screen. Everything new since 0.3.0 is listed under the betas below.
 
@@ -142,7 +142,7 @@ Tag `advance-0.4.0`. Download: `slot.advance-0.4.0-rg-sp.zip` from the [release 
 
 ## 0.4.0-beta.3 (beta, superseded by 0.4.0)
 
-Tag `advance-0.4.0-beta.3`. Download: `slot-advance-0.4.0-beta.3-rg-sp.zip` from the [release page](https://github.com/suprsomething/slot.advance/releases/tag/advance-0.4.0-beta.3). It has been superseded by 0.4.0, which is the one to download.
+Tag `advance-0.4.0-beta.3`. Download: `slot-advance-0.4.0-beta.3-rg-sp.zip` from the [release page](https://github.com/slowphase/slot.advance/releases/tag/advance-0.4.0-beta.3). It has been superseded by 0.4.0, which is the one to download.
 
 **Fixed since 0.4.0-beta.2**
 - After rapid lid flicks, opening the lid could leave the screen dark for 4 to 5 seconds before the game came back. The lid driver sometimes records "shut" after a wake even though the lid is open, so slot.advance put the device back to sleep. It now checks the lid sensor's raw level whenever the driver says "shut", and the raw level wins. It learns which level means "open" at start-up. `slot.log` notes each time it overrules the driver.
@@ -154,7 +154,7 @@ Tag `advance-0.4.0-beta.3`. Download: `slot-advance-0.4.0-beta.3-rg-sp.zip` from
 
 ## 0.4.0-beta.2 (beta, superseded by 0.4.0-beta.3)
 
-Tag `advance-0.4.0-beta.2`. Download: `slot-advance-0.4.0-beta.2-rg-sp.zip` from the [release page](https://github.com/suprsomething/slot.advance/releases/tag/advance-0.4.0-beta.2). It was the first published beta and has been superseded by 0.4.0-beta.3, which is the one to download.
+Tag `advance-0.4.0-beta.2`. Download: `slot-advance-0.4.0-beta.2-rg-sp.zip` from the [release page](https://github.com/slowphase/slot.advance/releases/tag/advance-0.4.0-beta.2). It was the first published beta and has been superseded by 0.4.0-beta.3, which is the one to download.
 
 **Fixed since 0.4.0-beta.1**
 - A running game whose emulator core failed to provide its state when the lid closed was counted as saved, so the sleep timer could shut down and lose progress since the last autosave. It is now treated as unsaved: the device keeps sleeping and retries the save instead of shutting down (commit `dbbadae`).
