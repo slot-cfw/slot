@@ -243,6 +243,24 @@ impl Ledger {
         }
     }
 
+    /// Rejected records of `account` whose achievements are published again go back to
+    /// pending, but only once: a record rejected twice stays rejected. Returns how many.
+    pub fn republished(&mut self, account: &str, ids: &[u32], now_ms: i64) -> usize {
+        let mut n = 0;
+        for e in &mut self.entries {
+            if e.account == account
+                && e.status == Status::Rejected
+                && e.attempts < 2
+                && ids.contains(&e.id)
+            {
+                e.status = Status::Pending;
+                e.changed_ms = now_ms;
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// Records still to send for `account`, oldest first. Never another account's.
     pub fn pending(&self, account: &str) -> Vec<&Entry> {
         let mut v: Vec<&Entry> = self

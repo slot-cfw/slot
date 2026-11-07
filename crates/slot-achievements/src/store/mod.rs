@@ -134,10 +134,18 @@ enum Msg {
     },
     Clock(ClockEvent, Stamp),
     Account(Option<Account>),
-    Hash {
-        console_id: u32,
+    /// The index's hash for a ROM, if it still holds.
+    IndexLookup {
         path: PathBuf,
-        reply: Sender<Result<String, String>>,
+        size: u64,
+        mtime_ns: i128,
+        reply: Sender<Option<String>>,
+    },
+    IndexRecord {
+        path: PathBuf,
+        size: u64,
+        mtime_ns: i128,
+        hash: String,
     },
     Unlocked {
         account: String,
@@ -156,6 +164,32 @@ enum Msg {
         error: String,
     },
     DismissDamaged,
+    /// Questions and writes for the network worker (Phase 3).
+    GetAccount(Sender<Option<Account>>),
+    Pending {
+        account: String,
+        reply: Sender<Vec<(u32, String)>>,
+    },
+    Attempt {
+        account: String,
+        id: u32,
+        error: String,
+    },
+    /// Rejected records of this account whose achievements a fresh definitions fetch shows
+    /// published again go back to pending, once.
+    Republished {
+        account: String,
+        ids: Vec<u32>,
+    },
+    ReadCache {
+        rel: PathBuf,
+        reply: Sender<Option<String>>,
+    },
+    WriteCache {
+        rel: PathBuf,
+        text: String,
+    },
+    NetTime(Sender<clock::NetTime>),
     /// A progress capture is waiting in the shared slot.
     Wake,
     Stop,
@@ -172,6 +206,8 @@ impl Msg {
                 | Msg::Account(_)
                 | Msg::Settle { .. }
                 | Msg::DismissDamaged
+                | Msg::Attempt { .. }
+                | Msg::Republished { .. }
         )
     }
 }
@@ -191,6 +227,9 @@ struct Shared {
     failing: AtomicBool,
     progress: Mutex<HashMap<ProgressKey, Vec<u8>>>,
     status: Mutex<StoreStatus>,
+    /// Called (on the store thread; must not block) after unlocks reach the ledger: the
+    /// network worker sends them.
+    after_unlock: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Shared {
@@ -366,23 +405,99 @@ impl StoreHandle {
         });
     }
 
+    /// Called after unlocks reach the ledger (the network worker's wake-up).
+    pub fn set_after_unlock(&self, f: impl Fn() + Send + Sync + 'static) {
+        if let Ok(mut h) = self.shared.after_unlock.lock() {
+            *h = Some(Arc::new(f));
+        }
+    }
+
+    fn ask<T: Default>(&self, msg: impl FnOnce(Sender<T>) -> Msg) -> T {
+        let (reply, rx) = mpsc::channel();
+        if !self.send(msg(reply)) {
+            return T::default();
+        }
+        rx.recv().unwrap_or_default()
+    }
+
+    /// The logged-in account (None when logged out).
+    pub fn account(&self) -> Option<Account> {
+        self.ask(Msg::GetAccount)
+    }
+
+    /// The account's pending unlocks, oldest first: (achievement, ROM hash).
+    pub fn pending_unlocks(&self, account: &str) -> Vec<(u32, String)> {
+        let account = account.to_string();
+        self.ask(|reply| Msg::Pending { account, reply })
+    }
+
+    /// A failed attempt that leaves the record pending.
+    pub fn attempt_failed(&self, account: &str, id: u32, error: &str) {
+        self.send(Msg::Attempt {
+            account: account.to_string(),
+            id,
+            error: error.to_string(),
+        });
+    }
+
+    pub fn republished(&self, account: &str, ids: Vec<u32>) {
+        self.send(Msg::Republished {
+            account: account.to_string(),
+            ids,
+        });
+    }
+
+    /// A cached server answer (`games/<hash>.json`, or an account's unlock list).
+    pub fn read_cache(&self, rel: &Path) -> Option<String> {
+        let rel = rel.to_path_buf();
+        self.ask(|reply| Msg::ReadCache { rel, reply })
+    }
+
+    /// Keeps a server answer (written atomically, and only if it changed).
+    pub fn write_cache(&self, rel: &Path, text: String) {
+        self.send(Msg::WriteCache {
+            rel: rel.to_path_buf(),
+            text,
+        });
+    }
+
+    /// The time TLS should check certificates against (architecture 10.2).
+    pub fn net_time(&self) -> clock::NetTime {
+        self.ask(Msg::NetTime)
+    }
+
     pub fn dismiss_damaged(&self) {
         self.send(Msg::DismissDamaged);
     }
 
-    /// The ROM's hash (from the index, or hashed now on the store thread). Blocks the
-    /// caller until answered, so never call it from the emulator thread.
+    /// The ROM's hash: from the index if the ROM is unchanged, otherwise hashed here, on
+    /// the caller's thread, never the store thread (a 32 MB ROM takes a moment, and the
+    /// store must stay free to write an unlock at once). Blocks the caller, so never call
+    /// it from the game or emulator thread.
     pub fn rom_hash(&self, console_id: u32, path: &Path) -> Result<String, String> {
-        let (reply, rx) = mpsc::channel();
-        if !self.send(Msg::Hash {
-            console_id,
-            path: path.to_path_buf(),
+        static HASHING: Mutex<()> = Mutex::new(());
+        let (size, mtime_ns) = index::stat(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let p = path.to_path_buf();
+        if let Some(h) = self.ask(|reply| Msg::IndexLookup {
+            path: p,
+            size,
+            mtime_ns,
             reply,
         }) {
-            return Err("the RA store has stopped".into());
+            return Ok(h);
         }
-        rx.recv()
-            .unwrap_or_else(|_| Err("the RA store has stopped".into()))
+        let hash = {
+            // rhash keeps global reader state: one hash at a time.
+            let _one = HASHING.lock().unwrap_or_else(|e| e.into_inner());
+            crate::hash::rom_hash(console_id, path)?
+        };
+        self.send(Msg::IndexRecord {
+            path: path.to_path_buf(),
+            size,
+            mtime_ns,
+            hash: hash.clone(),
+        });
+        Ok(hash)
     }
 
     /// Achievements `account` has unlocked here (ledger records, any status but
@@ -505,6 +620,7 @@ impl Store {
             failing: AtomicBool::new(false),
             progress: Mutex::new(HashMap::new()),
             status: Mutex::new(StoreStatus::default()),
+            after_unlock: Mutex::new(None),
         });
         let handle = StoreHandle {
             tx,
@@ -674,6 +790,45 @@ fn load_file<T>(
         lost,
         blocked: !kept,
     }
+}
+
+/// A cache file under the RA folder: `games/<hash>.json` or
+/// `accounts/<account>/unlocked/<hash>.json`. Anything else is refused.
+pub fn cache_path(root: &Path, rel: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let parts: Vec<String> = rel
+        .components()
+        .map(|c| match c {
+            Component::Normal(s) => s.to_str().map(str::to_string),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let file_ok = |f: &str| f.strip_suffix(".json").is_some_and(crate::hash::is_hash);
+    let ok = match parts.as_slice() {
+        [g, f] => g == "games" && file_ok(f),
+        [a, acc, u, f] => {
+            a == "accounts"
+                && account::valid_name(acc)
+                && acc == &acc.to_ascii_lowercase()
+                && u == "unlocked"
+                && file_ok(f)
+        }
+        _ => false,
+    };
+    ok.then(|| root.join(rel))
+}
+
+/// `games/<hash>.json`.
+pub fn game_cache(rom_hash: &str) -> PathBuf {
+    Path::new("games").join(format!("{rom_hash}.json"))
+}
+
+/// `accounts/<account>/unlocked/<hash>.json`.
+pub fn unlocks_cache(account_key: &str, rom_hash: &str) -> PathBuf {
+    Path::new("accounts")
+        .join(account_key)
+        .join("unlocked")
+        .join(format!("{rom_hash}.json"))
 }
 
 /// Removes temporary files an interrupted `atomic_write` left (`.<name>.<pid>.<n>.tmp`).
@@ -949,16 +1104,23 @@ impl Worker {
                 self.account = account;
                 self.account_dirty = true;
             }
-            Msg::Hash {
-                console_id,
+            Msg::IndexLookup {
                 path,
+                size,
+                mtime_ns,
                 reply,
             } => {
-                let r = self.index.lookup(console_id, &path);
-                if let Ok(index::Looked::Hashed(_)) = &r {
+                let _ = reply.send(self.index.cached(&path, size, mtime_ns));
+            }
+            Msg::IndexRecord {
+                path,
+                size,
+                mtime_ns,
+                hash,
+            } => {
+                if self.index.record(&path, size, mtime_ns, &hash) {
                     self.index_dirty = true;
                 }
-                let _ = reply.send(r.map(|l| l.hash().to_string()));
             }
             Msg::Unlocked { account, reply } => {
                 let ids = account::key(&account)
@@ -1004,6 +1166,68 @@ impl Worker {
                 }
             }
             Msg::DismissDamaged => self.damaged_lost = 0,
+            Msg::GetAccount(reply) => {
+                let _ = reply.send(self.account.clone());
+            }
+            Msg::Pending { account, reply } => {
+                let list = account::key(&account)
+                    .map(|k| {
+                        self.ledger
+                            .pending(&k)
+                            .into_iter()
+                            .map(|e| (e.id, e.rom_hash.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let _ = reply.send(list);
+            }
+            Msg::Attempt { account, id, error } => {
+                if let (Some(k), false) = (account::key(&account), self.ledger_blocked) {
+                    self.ledger.attempt_failed(&k, id, &error);
+                    self.ledger_dirty = true;
+                }
+            }
+            Msg::Republished { account, ids } => {
+                if let (Some(k), false) = (account::key(&account), self.ledger_blocked) {
+                    let now = self.time.now();
+                    if self.ledger.republished(&k, &ids, now.wall_ms) > 0 {
+                        self.ledger_dirty = true;
+                    }
+                }
+            }
+            Msg::ReadCache { rel, reply } => {
+                let text =
+                    cache_path(&self.root, &rel).and_then(|p| std::fs::read_to_string(p).ok());
+                let _ = reply.send(text);
+            }
+            Msg::WriteCache { rel, text } => match cache_path(&self.root, &rel) {
+                Some(path) => {
+                    if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+                        let r = path
+                            .parent()
+                            .map(std::fs::create_dir_all)
+                            .unwrap_or(Ok(()))
+                            .and_then(|_| slot_store::atomic_write(&path, text.as_bytes()));
+                        if let Err(e) = r {
+                            // A cache: not retried; fetched again next time.
+                            eprintln!(
+                                "slot: achievements: could not write {}: {e}",
+                                path.display()
+                            );
+                        }
+                    }
+                }
+                None => eprintln!("slot: achievements: refused a cache path outside the folder"),
+            },
+            Msg::NetTime(reply) => {
+                let now = self.time.now();
+                let t = if self.clock_blocked {
+                    clock::NetTime::System(now.wall_ms)
+                } else {
+                    self.history.net_time(&now)
+                };
+                let _ = reply.send(t);
+            }
             Msg::Wake | Msg::Stop => {}
         }
     }
@@ -1052,9 +1276,16 @@ impl Worker {
             match self.ledger_file.write(text.as_bytes()) {
                 Ok(_) => {
                     self.ledger_dirty = false;
+                    let any = !self.unannounced.is_empty();
                     for (account, id) in self.unannounced.drain(..) {
                         eprintln!("slot: achievements: {id} kept for {account}");
                         let _ = self.notices.send(Notice::Unlocked { account, id });
+                    }
+                    if any {
+                        let hook = self.shared.after_unlock.lock().ok().and_then(|h| h.clone());
+                        if let Some(f) = hook {
+                            f();
+                        }
                     }
                 }
                 Err(e) => {

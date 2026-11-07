@@ -188,6 +188,25 @@ pub struct UnlockTime {
     pub anchored: bool,
 }
 
+/// The time TLS checks certificates against (architecture 10.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetTime {
+    /// Network time, from this segment's measurement (or a step).
+    Known(i64),
+    /// No measurement yet: the system clock, which may be right.
+    System(i64),
+    /// No measurement, and the clock reads earlier than the anchor (for example after an
+    /// RTC reset): hold requests rather than fail them ("Waiting for network time").
+    Hold,
+}
+
+impl Default for NetTime {
+    /// A stopped store: hold.
+    fn default() -> Self {
+        NetTime::Hold
+    }
+}
+
 /// What to send as the award's `o` (seconds since the unlock).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Offset {
@@ -388,6 +407,22 @@ impl History {
         Err(Offset::Unknown(
             "network time did not answer and the clock is not anchored",
         ))
+    }
+
+    /// The time to check certificates against now.
+    pub fn net_time(&self, now: &Stamp) -> NetTime {
+        if let Some(seg) = self.boot(&now.boot_id).and_then(|b| b.segments.last()) {
+            if let Some(m) = seg.measurements.last() {
+                return NetTime::Known(now.wall_ms.saturating_add(m.offset_ms));
+            }
+            if seg.why == SegStart::Step {
+                return NetTime::Known(now.wall_ms);
+            }
+        }
+        match &self.anchor {
+            Some(a) if now.wall_ms < a.wall_ms => NetTime::Hold,
+            _ => NetTime::System(now.wall_ms),
+        }
     }
 
     /// Seconds since the unlock, for the award request (architecture 9.4).

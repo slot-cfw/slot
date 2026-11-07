@@ -39,7 +39,8 @@ impl Looked {
     }
 }
 
-fn stat(path: &Path) -> std::io::Result<(u64, i128)> {
+/// A ROM's size and modification time, which say whether a remembered hash still holds.
+pub fn stat(path: &Path) -> std::io::Result<(u64, i128)> {
     let m = std::fs::metadata(path)?;
     let mtime_ns = match m.modified()?.duration_since(UNIX_EPOCH) {
         Ok(d) => d.as_nanos() as i128,
@@ -49,27 +50,42 @@ fn stat(path: &Path) -> std::io::Result<(u64, i128)> {
 }
 
 impl Index {
-    /// The ROM's hash, from the index if its size and modification time still match.
+    /// The remembered hash, if the ROM's size and modification time still match.
+    pub fn cached(&self, path: &Path, size: u64, mtime_ns: i128) -> Option<String> {
+        self.roms
+            .get(path)
+            .filter(|s| s.size == size && s.mtime_ns == mtime_ns)
+            .map(|s| s.hash.clone())
+    }
+
+    /// Remembers a hash. Only paths that can be written as a record are kept (others are
+    /// hashed each time: still correct, just slower). Returns whether the index changed.
+    pub fn record(&mut self, path: &Path, size: u64, mtime_ns: i128, hash: &str) -> bool {
+        if !(lines::safe(&path.to_string_lossy()) && path.to_str().is_some())
+            || !crate::hash::is_hash(hash)
+        {
+            return false;
+        }
+        let seen = Seen {
+            size,
+            mtime_ns,
+            hash: hash.to_string(),
+        };
+        if self.roms.get(path) == Some(&seen) {
+            return false;
+        }
+        self.roms.insert(path.to_path_buf(), seen);
+        true
+    }
+
+    /// Looks a ROM up, hashing it here if it is new or changed.
     pub fn lookup(&mut self, console_id: u32, path: &Path) -> Result<Looked, String> {
         let (size, mtime_ns) = stat(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        if let Some(s) = self.roms.get(path) {
-            if s.size == size && s.mtime_ns == mtime_ns {
-                return Ok(Looked::Cached(s.hash.clone()));
-            }
+        if let Some(h) = self.cached(path, size, mtime_ns) {
+            return Ok(Looked::Cached(h));
         }
         let hash = crate::hash::rom_hash(console_id, path)?;
-        // Only paths that can be written as a record are remembered; others are hashed
-        // each time (still correct, just slower).
-        if lines::safe(&path.to_string_lossy()) && path.to_str().is_some() {
-            self.roms.insert(
-                path.to_path_buf(),
-                Seen {
-                    size,
-                    mtime_ns,
-                    hash: hash.clone(),
-                },
-            );
-        }
+        self.record(path, size, mtime_ns, &hash);
         Ok(Looked::Hashed(hash))
     }
 

@@ -25,9 +25,12 @@ use std::marker::PhantomData;
 use slot_retro::{MemoryDescriptor, MemoryMap};
 
 pub mod api;
-#[cfg(any(test, feature = "test-support"))]
+/// Server answers for tests (here and in other crates). Not used by slot.advance itself.
+#[doc(hidden)]
 pub mod fake;
 pub mod hash;
+pub mod net;
+pub mod session;
 pub mod store;
 
 /// rcheevos console IDs for the systems slot.advance supports (rc_consoles.h).
