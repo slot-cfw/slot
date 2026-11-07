@@ -1,7 +1,10 @@
 name: ra-live-check
 
 # Read-only check of slot.advance's RetroAchievements code against retroachievements.org,
-# with the separate RetroAchievements test account (0.6.0 Phase 3). Run by hand only.
+# with the separate RetroAchievements test account (0.6.0 Phase 3). Runs only when the
+# branch `ra-live-check` is pushed (after Dean has added the secrets), or by hand once this
+# file is on the default branch. Logs are public: nothing secret, and not even the
+# account's name, is printed.
 #
 # It logs in, reads the test games' achievement sets and starts a session for each.
 # It never sends an unlock: live unlocks only ever come from real play.
@@ -11,6 +14,8 @@ name: ra-live-check
 # GitHub masks them in logs; they are never in the repository or in chat.
 
 on:
+  push:
+    branches: [ra-live-check]
   workflow_dispatch:
     inputs:
       games:
@@ -39,6 +44,6 @@ jobs:
         env:
           RA_TEST_USERNAME: ${{ secrets.RA_TEST_USERNAME }}
           RA_TEST_PASSWORD: ${{ secrets.RA_TEST_PASSWORD }}
-          RA_GAMES: ${{ inputs.games }}
-          RA_FOCUS: ${{ inputs.focus }}
+          RA_GAMES: ${{ inputs.games || 'id:510,id:785' }}
+          RA_FOCUS: ${{ inputs.focus || 'Life Leech,Evasive Maneuvers,Old Bones,Soul Seeker,Deep Pockets,Explosive Chamber,Vitalit-E' }}
         run: ./target/release/examples/ra_live_check
