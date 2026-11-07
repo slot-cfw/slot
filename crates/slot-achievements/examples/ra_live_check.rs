@@ -197,7 +197,17 @@ fn main() {
             "- With a hit count or measured value (partial progress): {}",
             counters.len()
         );
+        for a in &counters {
+            let _ = writeln!(
+                out,
+                "  - counter: **{}** ({}, {} pts): {}\n    - logic: `{}`",
+                a.title, a.id, a.points, a.description, a.definition
+            );
+        }
         for a in &core {
+            if counters.iter().any(|c| c.id == a.id) {
+                continue;
+            }
             if focus.iter().any(|f| a.title.to_lowercase() == *f) {
                 let _ = writeln!(
                     out,
