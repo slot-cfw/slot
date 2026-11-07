@@ -454,16 +454,24 @@ pub struct GameData {
     pub achievements: Vec<Remote>,
 }
 
+/// The server adds "warning" achievements from this ID up (for example "Warning: Unknown
+/// Emulator", whose logic is always true) for clients it does not recognise for Hardcore.
+/// rcheevos' own client never activates or submits them (rc_client.c,
+/// `RC_CLIENT_ACHIEVEMENT_WARNING_ID`); neither does slot.advance. Seen in the live check,
+/// 7 Nov 2026.
+pub const WARNING_ID_FLOOR: u32 = 101_000_001;
+
 impl GameData {
     /// What the evaluator tracks: the core set's published achievements (unofficial ones
-    /// never run; subsets are not part of 0.6.0), minus those already unlocked.
+    /// never run; subsets are not part of 0.6.0; the server's warning achievements are
+    /// never real ones), minus those already unlocked.
     pub fn game_set(&self, unlocked: &[u32]) -> GameSet {
         GameSet {
             console_id: self.console_id,
             achievements: self
                 .achievements
                 .iter()
-                .filter(|a| a.set_type == SET_TYPE_CORE)
+                .filter(|a| a.set_type == SET_TYPE_CORE && a.id < WARNING_ID_FLOOR)
                 .map(|a| Achievement {
                     id: a.id,
                     definition: a.definition.clone(),
@@ -813,6 +821,8 @@ mod tests {
                     flags: 5,
                     ..fake::def(12, "0xH001001=1")
                 },
+                // As the real server adds it for an unrecognised client (live check).
+                fake::def(WARNING_ID_FLOOR, "1=1.300."),
             ],
         );
         let (v, g) = parse_game_sets(&reply(200, &body));
@@ -822,8 +832,13 @@ mod tests {
             (g.id, g.console_id, g.title.as_str()),
             (510, 5, "Castlevania")
         );
-        assert_eq!(g.achievements.len(), 2);
+        assert_eq!(g.achievements.len(), 3);
         let set = g.game_set(&[]);
+        assert_eq!(
+            set.achievements.len(),
+            2,
+            "the warning achievement never runs"
+        );
         assert_eq!(set.console_id, 5);
         assert!(set.achievements[0].published);
         assert!(!set.achievements[1].published, "unofficial never runs");
