@@ -10,6 +10,7 @@ use libloading::Library;
 use crate::core::{AvInfo, ButtonMask, CoreError, RetroCore, GBA_H, GBA_W};
 use crate::ffi::*;
 use crate::link::Link;
+use crate::memory_map::MemoryMap;
 use crate::rumble::Rumble;
 
 const VIDEO_BYTES: usize = (GBA_W * GBA_H * 4) as usize;
@@ -38,6 +39,9 @@ struct Host {
     options: std::collections::HashMap<String, std::ffi::CString>,
     options_dirty: bool,
     declared: std::collections::HashMap<String, Vec<String>>,
+    // The last memory map the core published, kept until the emulator thread takes it.
+    // Only copied here: nothing may read through it from inside the core's callback.
+    memory_map: Option<MemoryMap>,
 }
 
 thread_local! {
@@ -200,6 +204,13 @@ unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
             }
             let cb = std::ptr::read(data as *const AudioBufferStatusCallback);
             with_host(|h| h.audio_status = cb.callback).is_some()
+        }
+        SET_MEMORY_MAPS => {
+            let map = MemoryMap::copy_from(data as *const RawMemoryMap);
+            match map {
+                Some(map) => with_host(|h| h.memory_map = Some(map)).is_some(),
+                None => false,
+            }
         }
         SET_NETPACKET_INTERFACE => {
             if data.is_null() {
@@ -485,6 +496,7 @@ impl LibretroCore {
             options: std::collections::HashMap::new(),
             options_dirty: false,
             declared: std::collections::HashMap::new(),
+            memory_map: None,
         });
         unsafe {
             let _a = Active::bind(&mut host);
@@ -515,9 +527,13 @@ impl LibretroCore {
         if !self.loaded {
             return;
         }
-        let _a = Active::bind(&mut self.host);
-        unsafe { (self.api.unload_game)() };
+        {
+            let _a = Active::bind(&mut self.host);
+            unsafe { (self.api.unload_game)() };
+        }
         self.loaded = false;
+        // The map pointed into the game's memory, which unload_game has freed.
+        self.host.memory_map = None;
     }
 
     fn serialize_at(&mut self, size: usize) -> Option<Vec<u8>> {
@@ -566,6 +582,7 @@ impl RetroCore for LibretroCore {
 
     fn load(&mut self, rom: &Path) -> Result<(), CoreError> {
         self.unload();
+        self.host.memory_map = None;
         self.state_size = None;
         self.rom = std::fs::read(rom)?;
         self.rom_path = Some(
@@ -624,11 +641,20 @@ impl RetroCore for LibretroCore {
         std::mem::take(&mut self.host.audio)
     }
 
+    fn take_memory_map(&mut self) -> Option<MemoryMap> {
+        self.host.memory_map.take()
+    }
+
     fn serialize(&mut self) -> Result<Vec<u8>, CoreError> {
         if let Some(buf) = self.state_size.and_then(|size| self.serialize_at(size)) {
             return Ok(buf);
         }
-        let size = unsafe { (self.api.serialize_size)() };
+        // Bound like every other core call: mGBA may finish its deferred start-up here,
+        // which publishes the memory map through the environment callback.
+        let size = {
+            let _a = Active::bind(&mut self.host);
+            unsafe { (self.api.serialize_size)() }
+        };
         self.state_size = (size > 0).then_some(size);
         if size == 0 {
             return Err(CoreError::State("core reports no state".into()));
@@ -731,7 +757,48 @@ mod tests {
             options,
             options_dirty,
             declared: HashMap::new(),
+            memory_map: None,
         })
+    }
+
+    #[test]
+    fn a_published_memory_map_is_copied_for_the_emulator_thread() {
+        let mut host = host_with(HashMap::new(), false);
+        let mut iwram = [0u8; 16];
+        let descriptors = [MemoryDescriptor {
+            flags: 0,
+            ptr: iwram.as_mut_ptr().cast(),
+            offset: 0,
+            start: 0x0300_0000,
+            select: 0xFF00_0000,
+            disconnect: 0,
+            len: iwram.len(),
+            addrspace: ptr::null(),
+        }];
+        let mut raw = RawMemoryMap {
+            descriptors: descriptors.as_ptr(),
+            num_descriptors: 1,
+        };
+        let accepted = {
+            let _active = Active::bind(&mut host);
+            unsafe { environment(SET_MEMORY_MAPS, (&mut raw as *mut RawMemoryMap).cast()) }
+        };
+        assert!(accepted);
+        let map = host.memory_map.take().expect("the map was kept");
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.descriptors()[0].start, 0x0300_0000);
+        assert_eq!(map.descriptors()[0].ptr, iwram.as_mut_ptr().cast());
+    }
+
+    #[test]
+    fn a_null_memory_map_is_refused() {
+        let mut host = host_with(HashMap::new(), false);
+        let accepted = {
+            let _active = Active::bind(&mut host);
+            unsafe { environment(SET_MEMORY_MAPS, ptr::null_mut()) }
+        };
+        assert!(!accepted);
+        assert!(host.memory_map.is_none());
     }
 
     fn declaration(key: &str, value: &str) -> (Variable, CString, CString) {

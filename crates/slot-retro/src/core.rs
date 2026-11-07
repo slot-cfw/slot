@@ -105,6 +105,13 @@ pub trait RetroCore: Send {
     fn start_link(&mut self, _client_id: u16) {}
     fn pump_link(&mut self) {}
     fn stop_link(&mut self) {}
+    /// The memory map the core published since the last call, if any. A core publishes
+    /// one from inside a core call (mGBA: the first run, serialize or unserialize, and
+    /// every reset), so callers ask after each call. Each newer map replaces the older
+    /// one, whose pointers may no longer be valid.
+    fn take_memory_map(&mut self) -> Option<crate::MemoryMap> {
+        None
+    }
 }
 
 #[cfg(test)]
