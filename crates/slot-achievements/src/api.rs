@@ -72,6 +72,12 @@ extern "C" {
         hash: *const c_char,
         out: *mut RawReq,
     ) -> c_int;
+    fn slot_ra_game_sets_id_req(
+        user: *const c_char,
+        token: *const c_char,
+        game_id: u32,
+        out: *mut RawReq,
+    ) -> c_int;
     fn slot_ra_start_session_req(
         user: *const c_char,
         token: *const c_char,
@@ -242,6 +248,13 @@ pub fn login_token(user: &str, token: &str) -> Result<Call, String> {
 pub fn game_sets(user: &str, token: &str, rom_hash: &str) -> Result<Call, String> {
     let (u, t, h) = (c(user)?, c(token)?, c(rom_hash)?);
     build(|out| unsafe { slot_ra_game_sets_req(u.as_ptr(), t.as_ptr(), h.as_ptr(), out) })
+}
+
+/// The game's achievement sets, by RetroAchievements game ID (for the live check tool;
+/// slot.advance itself always asks by ROM hash).
+pub fn game_sets_by_id(user: &str, token: &str, game_id: u32) -> Result<Call, String> {
+    let (u, t) = (c(user)?, c(token)?);
+    build(|out| unsafe { slot_ra_game_sets_id_req(u.as_ptr(), t.as_ptr(), game_id, out) })
 }
 
 /// Start a session (Softcore); answers with the account's unlocks for the game.

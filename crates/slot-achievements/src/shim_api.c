@@ -200,3 +200,13 @@ int slot_ra_game_sets_resp(const char *body, size_t len, int http, slot_ra_statu
   rc_api_destroy_fetch_game_sets_response(&r);
   return result;
 }
+
+int slot_ra_game_sets_id_req(const char *user, const char *token, uint32_t game_id, slot_ra_req *out) {
+  rc_api_request_t request;
+  rc_api_fetch_game_sets_request_t p;
+  memset(&p, 0, sizeof(p));
+  p.username = user;
+  p.api_token = token;
+  p.game_id = game_id;
+  return finish(&request, rc_api_init_fetch_game_sets_request_hosted(&request, &p, NULL), out);
+}

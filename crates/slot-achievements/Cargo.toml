@@ -17,6 +17,8 @@ slot-retro = { path = "../slot-retro" }
 slot-store = { path = "../slot-store" }
 
 [dev-dependencies]
+# For the read-only live check example (examples/ra_live_check.rs) only.
+slot-net = { path = "../slot-net" }
 
 [build-dependencies]
 cc = "1"

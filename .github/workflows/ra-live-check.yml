@@ -1,0 +1,44 @@
+name: ra-live-check
+
+# Read-only check of slot.advance's RetroAchievements code against retroachievements.org,
+# with the separate RetroAchievements test account (0.6.0 Phase 3). Run by hand only.
+#
+# It logs in, reads the test games' achievement sets and starts a session for each.
+# It never sends an unlock: live unlocks only ever come from real play.
+#
+# The test account lives in two repository secrets, entered on GitHub's website:
+#   RA_TEST_USERNAME and RA_TEST_PASSWORD
+# GitHub masks them in logs; they are never in the repository or in chat.
+
+on:
+  workflow_dispatch:
+    inputs:
+      games:
+        description: >-
+          Games to read: id:<RetroAchievements game id> or a ROM's MD5 hash, comma-separated
+          (510 Castlevania: Aria of Sorrow, 785 Metroid Fusion).
+        required: false
+        default: 'id:510,id:785'
+      focus:
+        description: Achievement titles whose logic to show, comma-separated.
+        required: false
+        default: 'Life Leech,Old Bones,Soul Seeker,Deep Pockets,Explosive Chamber,Vitalit-E'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the check
+        run: cargo build -p slot-achievements --example ra_live_check --release
+      - name: Run it (read-only)
+        env:
+          RA_TEST_USERNAME: ${{ secrets.RA_TEST_USERNAME }}
+          RA_TEST_PASSWORD: ${{ secrets.RA_TEST_PASSWORD }}
+          RA_GAMES: ${{ inputs.games }}
+          RA_FOCUS: ${{ inputs.focus }}
+        run: ./target/release/examples/ra_live_check

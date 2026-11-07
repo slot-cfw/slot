@@ -2019,6 +2019,7 @@ version = "0.5.0"
 dependencies = [
  "cc",
  "libc",
+ "slot-net",
  "slot-retro",
  "slot-store",
 ]
