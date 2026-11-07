@@ -5,6 +5,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::achievements::{AchievementPlan, Achievements};
 use crate::cable::{self, Cable};
 use slot_retro::{
     ButtonMask, Link, LinkChannel, RetroCore, Rumble, GBA_H, GBA_W, NETPACKET_RELIABLE,
@@ -80,6 +81,7 @@ enum Cmd {
     EndLink,
     BeginCable(u8, Box<dyn LinkChannel>),
     SetOption(String, String),
+    Achievements(Option<AchievementPlan>),
 }
 
 struct Shared {
@@ -247,6 +249,13 @@ impl EmuHandle {
 
     pub fn begin_cable(&self, player: u8, transport: Box<dyn LinkChannel>) {
         request(&self.cmds, &self.shared, Cmd::BeginCable(player, transport));
+    }
+
+    /// Turns RetroAchievements tracking on for the seated game, or off with `None`.
+    /// Nothing in slot.advance calls this yet (0.6.0 Phase 1): tracking stays off until a
+    /// later phase decides when to start it. Unlocks are reported on the plan's channel.
+    pub fn set_achievements(&self, plan: Option<AchievementPlan>) {
+        request(&self.cmds, &self.shared, Cmd::Achievements(plan));
     }
 
     pub fn end_link(&self) {
@@ -573,9 +582,22 @@ impl Worker {
         let mut cable_core = Duration::ZERO;
         let mut cable_wait = Duration::ZERO;
         let mut ff = (0u32, 0u32, Duration::ZERO, Instant::now());
+        // RetroAchievements, off unless a plan arrives. A session started linked never
+        // tracks. Declared after `core`, so it is dropped first.
+        let mut ra = match self.player {
+            Some(_) => Achievements::forbidden(),
+            None => Achievements::default(),
+        };
         while !self.shared.stop.load(Ordering::Relaxed) {
             for cmd in self.cmds.try_iter() {
-                self.apply(cmd, core.as_mut(), &mut transport, &mut cable, &link);
+                self.apply(
+                    cmd,
+                    core.as_mut(),
+                    &mut transport,
+                    &mut cable,
+                    &link,
+                    &mut ra,
+                );
             }
 
             if let Some(t) = transport.as_mut() {
@@ -600,6 +622,8 @@ impl Worker {
                                         // to be written over this player's own.
                                         self.shared.sav_refused.store(true, Ordering::Release);
                                         self.shared.resume_refused.store(true, Ordering::Release);
+                                        // Another player's game: never tracked.
+                                        ra.forbid();
                                         c.prime();
                                         t.send(NETPACKET_RELIABLE, &cable::ready_packet());
                                     }
@@ -624,6 +648,7 @@ impl Worker {
             self.shared.observed.store(speed as u8, Ordering::Release);
             let ff_sound = self.shared.ff_sound.load(Ordering::Relaxed);
             let rewinding = speed != Speed::Paused && self.shared.rewind.load(Ordering::Relaxed);
+            ra.rewinding(rewinding, core.as_mut());
             let gate = (
                 speed == Speed::Fast && !ff_sound,
                 speed == Speed::Paused || rewinding,
@@ -723,7 +748,14 @@ impl Worker {
                                 }
                             }
                         }
-                        None => core.run_frame(input),
+                        None => {
+                            core.run_frame(input);
+                            // Every emulated frame, fast-forward steps included; never
+                            // during a link session.
+                            if transport.is_none() {
+                                ra.frame(core.as_mut());
+                            }
+                        }
                     }
                     let took = frame_began.elapsed();
                     if last {
@@ -843,7 +875,14 @@ impl Worker {
                         }
                         Wait::Request => {
                             for cmd in self.cmds.try_iter() {
-                                self.apply(cmd, core.as_mut(), &mut transport, &mut cable, &link);
+                                self.apply(
+                                    cmd,
+                                    core.as_mut(),
+                                    &mut transport,
+                                    &mut cable,
+                                    &link,
+                                    &mut ra,
+                                );
                             }
                             continue;
                         }
@@ -866,8 +905,18 @@ impl Worker {
             }
         }
         for cmd in self.cmds.try_iter() {
-            self.apply(cmd, core.as_mut(), &mut transport, &mut cable, &link);
+            self.apply(
+                cmd,
+                core.as_mut(),
+                &mut transport,
+                &mut cable,
+                &link,
+                &mut ra,
+            );
         }
+        // No pointer into the core's memory may outlive it.
+        ra.stop();
+        drop(ra);
         ring.set_muted(false);
         ring.set_idle(false);
         let (dropped, starved) = (ring.overruns(), ring.underruns());
@@ -883,6 +932,7 @@ impl Worker {
         transport: &mut Option<Box<dyn LinkChannel>>,
         cable: &mut Option<Cable>,
         link: &Link,
+        ra: &mut Achievements,
     ) {
         match cmd {
             Cmd::Save(reply) => match core.serialize_exact() {
@@ -895,6 +945,7 @@ impl Worker {
                 if let Err(e) = core.unserialize(&self.for_core(state)) {
                     eprintln!("slot: {e}");
                 }
+                ra.state_loaded(core);
             }
             Cmd::Sav(reply) => {
                 let _ = reply.send(core.save_ram());
@@ -935,6 +986,7 @@ impl Worker {
             Cmd::SetOption(key, value) => {
                 core.set_option(&key, &value);
             }
+            Cmd::Achievements(plan) => ra.set(plan, core),
             Cmd::EndLink => {
                 self.shared.link_lost.store(false, Ordering::Relaxed);
                 self.shared.peer_ended.store(false, Ordering::Relaxed);
@@ -947,6 +999,7 @@ impl Worker {
                 *transport = None;
                 link.clear();
                 link.set_active(false);
+                ra.link_ended(core);
             }
         }
     }
