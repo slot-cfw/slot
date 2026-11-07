@@ -182,8 +182,10 @@ struct Shared {
     alive: AtomicBool,
     /// Messages in the channel (for the bound).
     queued: AtomicUsize,
-    /// Work not yet on the card: counted messages plus waiting progress files, and 1 while
-    /// a batch is being written. D5 waits for this to reach zero.
+    /// Work not yet on the card: counted messages (released only after the batch holding
+    /// them is written) plus waiting progress files. D5 waits for this to reach zero. A
+    /// write that failed and waits for its retry (1 s or more) is not counted: waiting
+    /// 250 ms would not help it.
     pending: Mutex<usize>,
     idle: Condvar,
     failing: AtomicBool,
@@ -320,6 +322,27 @@ impl StoreHandle {
     pub fn clock_event(&self, event: ClockEvent) {
         let now = self.time.now();
         self.send(Msg::Clock(event, now));
+    }
+
+    /// A stamp now, to give a clock event that is about to happen (see
+    /// [`StoreHandle::clock_event_at`]).
+    pub fn stamp(&self) -> Stamp {
+        self.time.now()
+    }
+
+    /// A clock event stamped `at` (taken just before it happened, so the break is not
+    /// placed late).
+    pub fn clock_event_at(&self, event: ClockEvent, at: Stamp) {
+        self.send(Msg::Clock(event, at));
+    }
+
+    /// A clock event that happened `ago`.
+    pub fn clock_event_ago(&self, event: ClockEvent, ago: Duration) {
+        let mut at = self.time.now();
+        let ms = ago.as_millis().min(u64::MAX as u128) as u64;
+        at.boot_ms = at.boot_ms.saturating_sub(ms);
+        at.wall_ms = at.wall_ms.saturating_sub(ms as i64);
+        self.send(Msg::Clock(event, at));
     }
 
     /// Log In: keeps the user name and token in `account.txt`.
@@ -489,13 +512,15 @@ impl Store {
             time: config.time.clone(),
         };
         // Loading happens on the thread, but counts as pending so a power-off straight
-        // after start waits for any recovery write.
+        // after start waits for any recovery write. The start is stamped here, before any
+        // clock event can be stamped, so the history's first segment comes first.
         shared.add_pending(1);
+        let started = config.time.now();
         let thread = std::thread::Builder::new()
             .name("slot-ra-store".into())
             .spawn(move || {
                 let _ended = Ended(shared.clone());
-                let mut worker = Worker::load(config, shared.clone(), notices);
+                let mut worker = Worker::load(config, started, shared.clone(), notices);
                 shared.done_pending(1);
                 worker.run(rx);
             })?;
@@ -548,6 +573,9 @@ struct Worker {
     /// meanwhile is merged in).
     ledger_blocked: bool,
     clock_blocked: bool,
+    /// Server answers that arrived while the ledger could not be read; applied once it
+    /// reads.
+    deferred_settles: Vec<(String, u32, Status, String, i64)>,
 }
 
 /// Returns false if the damaged file could not be kept aside (so it must not be written
@@ -594,6 +622,7 @@ fn load_file<T>(
     header: &str,
     now_ms: i64,
     notices: &Sender<Notice>,
+    quiet: bool,
     parse: impl Fn(&[String]) -> (T, usize),
 ) -> LoadedFile<T> {
     let (records, bytes, lost) = match lines::load(&path, header) {
@@ -601,10 +630,12 @@ fn load_file<T>(
         Ok(Loaded::Clean { records, bytes }) => (records, Some(bytes), 0),
         Ok(Loaded::Damaged { records, lost }) => (records, None, lost),
         Err(e) => {
-            eprintln!(
-                "slot: achievements: could not read {} ({e}); it is left alone until it reads",
-                path.display()
-            );
+            if !quiet {
+                eprintln!(
+                    "slot: achievements: could not read {} ({e}); it is left alone until it reads",
+                    path.display()
+                );
+            }
             let (value, _) = parse(&[]);
             return LoadedFile {
                 value,
@@ -632,7 +663,10 @@ fn load_file<T>(
         };
     }
     let kept = keep_aside(&path, now_ms, records.len().saturating_sub(bad), lost);
-    let _ = notices.send(Notice::Damaged { file: path, lost });
+    // Retries of a file that could not be kept aside stay quiet: announced once.
+    if kept || !quiet {
+        let _ = notices.send(Notice::Damaged { file: path, lost });
+    }
     LoadedFile {
         value,
         tracked,
@@ -657,8 +691,7 @@ fn sweep_temporaries(dir: &Path) {
 }
 
 impl Worker {
-    fn load(config: Config, shared: Arc<Shared>, notices: Sender<Notice>) -> Worker {
-        let now = config.time.now();
+    fn load(config: Config, now: Stamp, shared: Arc<Shared>, notices: Sender<Notice>) -> Worker {
         let root = config.root;
         let ms = now.wall_ms;
         sweep_temporaries(&root);
@@ -669,6 +702,7 @@ impl Worker {
             ledger::HEADER,
             ms,
             &notices,
+            false,
             Ledger::from_records,
         );
         let c = load_file(
@@ -676,6 +710,7 @@ impl Worker {
             clock::HEADER,
             ms,
             &notices,
+            false,
             History::from_records,
         );
         // A clock history that did not read whole is not trusted at all: a lost line can
@@ -694,6 +729,7 @@ impl Worker {
             account::HEADER,
             ms,
             &notices,
+            false,
             |r| match Account::from_records(r) {
                 Some(a) => (Some(a), 0),
                 None if r.is_empty() => (None, 0),
@@ -711,6 +747,7 @@ impl Worker {
             index::HEADER,
             ms,
             &notices,
+            false,
             Index::from_records,
         );
 
@@ -736,6 +773,7 @@ impl Worker {
             retry: 0,
             ledger_blocked: l.blocked,
             clock_blocked: c.blocked,
+            deferred_settles: Vec::new(),
         };
         w.flush();
         w.publish();
@@ -745,33 +783,56 @@ impl Worker {
     /// Tries again to read a ledger that could not be read (or kept aside), and merges
     /// what was kept in memory meanwhile into it.
     fn reopen_ledger(&mut self, now_ms: i64) {
+        if !self.card_present() {
+            // The card is not there: missing is not the same as empty.
+            return;
+        }
         let l = load_file(
             self.root.join(LEDGER_FILE),
             ledger::HEADER,
             now_ms,
             &self.notices,
+            true,
             Ledger::from_records,
         );
         if l.blocked {
             return;
         }
         let mut on_card = l.value;
-        let added = on_card.absorb(std::mem::take(&mut self.ledger));
+        let new = on_card.absorb(std::mem::take(&mut self.ledger));
+        let added = !new.is_empty();
+        // Only unlocks the card did not already hold are announced (the evaluator may have
+        // re-earned ones it could not see while the ledger was unreadable).
+        self.unannounced.retain(|k| new.contains(k));
+        for (account, id, status, error, at) in std::mem::take(&mut self.deferred_settles) {
+            on_card.settle(&account, id, status, &error, at);
+        }
         self.ledger = on_card;
         self.ledger_file = l.tracked;
         self.ledger_blocked = false;
-        self.ledger_dirty = self.ledger_dirty || l.dirty || added;
+        self.ledger_dirty = true;
+        let _ = added;
         self.damaged_lost += l.lost;
         eprintln!("slot: achievements: unlocks.txt reads again; what was kept in memory is merged");
     }
 
+    /// Whether the folder holding ours (`Config/` on the card) is there. If it is not, the
+    /// card has gone, and a file that "does not exist" there is not an empty one.
+    fn card_present(&self) -> bool {
+        self.root.parent().is_some_and(|p| p.is_dir())
+    }
+
     /// The same for the clock history: this boot (from memory) is added to what reads.
     fn reopen_clock(&mut self, now_ms: i64) {
+        if !self.card_present() {
+            return;
+        }
         let c = load_file(
             self.root.join(CLOCK_FILE),
             clock::HEADER,
             now_ms,
             &self.notices,
+            true,
             History::from_records,
         );
         if c.blocked {
@@ -914,7 +975,15 @@ impl Worker {
                 let now = self.time.now();
                 let r = account::key(&account)
                     .and_then(|k| self.ledger.get(&k, id).cloned())
-                    .map(|e| self.history.offset(&e.time, &now, network_failed));
+                    .map(|e| {
+                        if self.clock_blocked && e.time.at.boot_id != now.boot_id {
+                            // The history for earlier boots is on a card that does not
+                            // read just now: wait for it rather than send no offset.
+                            clock::Offset::Wait
+                        } else {
+                            self.history.offset(&e.time, &now, network_failed)
+                        }
+                    });
                 let _ = reply.send(r);
             }
             Msg::Settle {
@@ -925,8 +994,13 @@ impl Worker {
             } => {
                 if let Some(k) = account::key(&account) {
                     let now = self.time.now();
-                    self.ledger.settle(&k, id, status, &error, now.wall_ms);
-                    self.ledger_dirty = true;
+                    if self.ledger_blocked {
+                        self.deferred_settles
+                            .push((k, id, status, error, now.wall_ms));
+                    } else {
+                        self.ledger.settle(&k, id, status, &error, now.wall_ms);
+                        self.ledger_dirty = true;
+                    }
                 }
             }
             Msg::DismissDamaged => self.damaged_lost = 0,
@@ -946,7 +1020,11 @@ impl Worker {
         if self.clock_blocked {
             failed = true;
         } else if self.clock_dirty {
-            self.history.prune(&self.ledger.boots_needed());
+            if !self.ledger_blocked {
+                // Only with the whole ledger in view: otherwise a boot an unread record
+                // still needs could go.
+                self.history.prune(&self.ledger.boots_needed());
+            }
             let text = lines::encode(clock::HEADER, &self.history.records());
             match self.clock_file.write(text.as_bytes()) {
                 Ok(_) => self.clock_dirty = false,

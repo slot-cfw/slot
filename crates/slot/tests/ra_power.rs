@@ -305,7 +305,12 @@ fn network_time_events_reach_the_clock_history() {
         offset_s: 36.3504,
         took: Duration::from_millis(900),
     });
-    listen(slot_net::TimeEvent::Stepped { rtc_written: true });
+    // The step comes in a later idle frame; the RTC write after it took 30 ms.
+    std::thread::sleep(Duration::from_millis(100));
+    listen(slot_net::TimeEvent::Stepped {
+        rtc_written: true,
+        since: Duration::from_millis(30),
+    });
     assert!(store.handle().settle_for_poweroff(Duration::from_secs(5)));
     let text = std::fs::read_to_string(slot_achievements::store::root(d.path()).join("clock.txt"))
         .unwrap();

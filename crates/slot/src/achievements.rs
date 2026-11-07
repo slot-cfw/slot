@@ -304,7 +304,11 @@ pub fn clock_listener(
                 offset_ms: (offset_s * 1000.0).round() as i64,
                 took_ms: took.as_millis() as u64,
             },
-            slot_net::TimeEvent::Stepped { rtc_written } => ClockEvent::Stepped { rtc_written },
+            slot_net::TimeEvent::Stepped { rtc_written, since } => {
+                // Stamped for the moment of the step, not after the RTC write.
+                store.clock_event_ago(ClockEvent::Stepped { rtc_written }, since);
+                return;
+            }
         };
         store.clock_event(event);
     }

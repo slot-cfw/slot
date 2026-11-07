@@ -749,6 +749,8 @@ fn an_unreadable_ledger_is_never_written_over_and_is_merged_once_it_reads() {
     std::fs::write(root.join(LEDGER_FILE).join("x"), b"").unwrap();
     let r = spawn(&root, time.clone());
     r.unlock(&time, "dean", 3);
+    // Unable to see the ledger, the game re-earns one the card already holds.
+    r.unlock(&time, "dean", 1);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !r.h.failing() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
@@ -780,7 +782,49 @@ fn an_unreadable_ledger_is_never_written_over_and_is_merged_once_it_reads() {
         vec![1, 2, 3],
         "nothing on the card was lost; the new unlock merged in"
     );
-    assert_eq!(r.unlocked_notices(), vec![("dean".into(), 3)]);
+    assert_eq!(
+        r.unlocked_notices(),
+        vec![("dean".into(), 3)],
+        "only the unlock the card did not hold is announced"
+    );
+}
+
+#[test]
+fn while_clock_txt_cannot_be_read_earlier_boots_wait_instead_of_sending_no_offset() {
+    let root = tempdir("clockblocked");
+    let time = FakeTime::new("boot-a");
+    {
+        let r = spawn(&root, time.clone());
+        r.h.clock_event(ClockEvent::Measured {
+            offset_ms: 5_000,
+            took_ms: 0,
+        });
+        time.run(1000);
+        r.unlock(&time, "dean", 2);
+        r.settle();
+    }
+    let good = std::fs::read(root.join("clock.txt")).unwrap();
+    std::fs::remove_file(root.join("clock.txt")).unwrap();
+    std::fs::create_dir_all(root.join("clock.txt").join("x")).unwrap();
+    let next = Arc::new(FakeTime(Mutex::new(Stamp {
+        boot_id: "boot-b".into(),
+        boot_ms: 2000,
+        wall_ms: time.now().wall_ms + 60_000,
+    })));
+    let r = spawn(&root, next.clone());
+    r.h.clock_event(ClockEvent::Measured {
+        offset_ms: 5_000,
+        took_ms: 0,
+    });
+    assert_eq!(r.h.offset("dean", 2, false), Some(Offset::Wait));
+    // It reads again: the earlier boot's measurement is back.
+    std::fs::remove_dir_all(root.join("clock.txt")).unwrap();
+    std::fs::write(root.join("clock.txt"), good).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(25);
+    while r.h.offset("dean", 2, false) == Some(Offset::Wait) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(r.h.offset("dean", 2, false), Some(Offset::Seconds(60)));
 }
 
 #[test]

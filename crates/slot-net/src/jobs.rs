@@ -170,7 +170,8 @@ pub enum TimeEvent {
     /// The query took `took` (the replies came at some moment within it).
     Measured { offset_s: f64, took: Duration },
     /// The system clock was stepped to network time; `rtc_written` if the RTC followed.
-    Stepped { rtc_written: bool },
+    /// The step itself happened `since` ago (the RTC write came after it).
+    Stepped { rtc_written: bool, since: Duration },
 }
 
 impl Shared {
@@ -396,6 +397,7 @@ impl NetJobs {
             Decision::Step(s) => {
                 match (self.step_clock)(s) {
                     Ok(()) => {
+                        let stepped_at = Instant::now();
                         eprintln!(
                             "slot: time: clock corrected by {s:+.2} s from network time ({} replies)",
                             offer.replies
@@ -414,7 +416,10 @@ impl NetJobs {
                                 false
                             }
                         };
-                        self.shared.tell_time(TimeEvent::Stepped { rtc_written });
+                        self.shared.tell_time(TimeEvent::Stepped {
+                            rtc_written,
+                            since: stepped_at.elapsed(),
+                        });
                     }
                     Err(e) => eprintln!(
                         "slot: time: the clock could not be corrected: {e} (RTC not written)"
@@ -1302,10 +1307,10 @@ mod tests {
         ));
         assert!(!jobs.clock_done(), "the hook does not apply anything");
         jobs.idle_moment();
-        assert_eq!(
+        assert!(matches!(
             seen.lock().unwrap()[1..],
-            [TimeEvent::Stepped { rtc_written: true }]
-        );
+            [TimeEvent::Stepped { rtc_written: true, since }] if since < Duration::from_secs(1)
+        ));
         assert!(jobs.clock_done());
     }
 
@@ -1313,10 +1318,10 @@ mod tests {
     fn the_time_hook_hears_a_failed_rtc_write_and_nothing_for_a_failed_step() {
         let (jobs, seen, _d) = timed_rig("+36.35", ok_step, failing_rtc);
         jobs.idle_moment();
-        assert_eq!(
+        assert!(matches!(
             seen.lock().unwrap()[1..],
-            [TimeEvent::Stepped { rtc_written: false }]
-        );
+            [TimeEvent::Stepped { rtc_written: false, since }] if since < Duration::from_secs(1)
+        ));
         let (jobs, seen, _d) = timed_rig("+36.35", failing_step, no_rtc);
         jobs.idle_moment();
         assert_eq!(seen.lock().unwrap().len(), 1, "the clock did not move");

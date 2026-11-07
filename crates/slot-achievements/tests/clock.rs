@@ -97,6 +97,8 @@ impl Sim {
     }
 
     fn step(&mut self, rtc_written: bool) {
+        // slot-net steps in the next idle frame after publishing its measurement.
+        self.run(20);
         self.err_ms = 0;
         if rtc_written {
             self.rtc_err_ms = 0;
@@ -773,4 +775,61 @@ fn a_clock_file_that_does_not_make_sense_counts_as_damaged() {
         })
         .collect();
     assert!(History::from_records(&absurd).1 > 0);
+}
+
+#[test]
+fn a_break_recorded_late_is_put_in_time_order_and_unsettles_what_it_crossed() {
+    // Review 2: the manual change is stamped before a measurement's stamp but reaches the
+    // store after it.
+    let mut s = Sim::new(0);
+    s.run(10 * MIN);
+    let manual_at = s.stamp();
+    s.run(300);
+    let straddling = s.stamp(); // its query (with the margin) began before the change
+    s.run(30 * S);
+    let after = s.stamp(); // its query began well after the change
+    s.h.record(
+        ClockEvent::Measured {
+            offset_ms: 0,
+            took_ms: 100,
+        },
+        &straddling,
+    );
+    s.h.record(
+        ClockEvent::Measured {
+            offset_ms: -7_000,
+            took_ms: 100,
+        },
+        &after,
+    );
+    assert_eq!(s.h.boots.last().unwrap().segments[0].measurements.len(), 2);
+    s.h.record(ClockEvent::Manual, &manual_at);
+    let segs = &s.h.boots.last().unwrap().segments;
+    assert_eq!(segs.len(), 2);
+    assert!(
+        segs[0].measurements.is_empty(),
+        "nothing taken across or after the change stays before it"
+    );
+    assert_eq!(
+        segs[1].measurements.len(),
+        1,
+        "the one taken wholly after it moves after it"
+    );
+    assert_eq!(segs[1].measurements[0].offset_ms, -7_000);
+    s.reload();
+}
+
+#[test]
+fn a_step_recorded_before_an_earlier_manual_change_does_not_anchor() {
+    let mut s = Sim::new(5 * HOUR);
+    s.run(MIN);
+    let manual_at = s.stamp();
+    s.run(MIN);
+    s.measure();
+    s.step(true);
+    assert!(s.h.anchor.is_some());
+    // The manual change stamped before the step arrives after it.
+    s.h.record(ClockEvent::Manual, &manual_at);
+    assert!(s.h.anchor.is_none());
+    s.reload();
 }

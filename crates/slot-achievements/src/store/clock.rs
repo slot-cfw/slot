@@ -72,8 +72,65 @@ impl SegStart {
 /// How far the system clock was behind network time (positive) when measured.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Measurement {
+    /// When the query began (with a margin): the replies came between this and `at_ms`.
+    pub from_ms: u64,
     pub at_ms: u64,
     pub offset_ms: i64,
+}
+
+/// Added before a query's start, so a clock break just before it is never missed (the
+/// query is timed on the monotonic clock, and to the millisecond).
+pub const QUERY_MARGIN_MS: u64 = 1000;
+
+impl Boot {
+    /// Whether segment `i` begins with a break (anything but the boot itself).
+    fn breaks_at(&self, i: usize) -> bool {
+        i > 0 || self.segments[i].why != SegStart::Boot
+    }
+
+    /// Files a measurement in the segment it was taken in. Refused (false) if the clock
+    /// broke at any moment while the query ran: its replies may describe either side.
+    fn file(&mut self, m: Measurement) -> Option<usize> {
+        let crossed = (0..self.segments.len()).any(|i| {
+            self.breaks_at(i)
+                && self.segments[i].start_ms >= m.from_ms
+                && self.segments[i].start_ms <= m.at_ms
+        });
+        if crossed {
+            return None;
+        }
+        let i = self.segments.iter().rposition(|s| s.start_ms <= m.at_ms)?;
+        self.segments[i].measurements.push(m);
+        Some(i)
+    }
+
+    /// Inserts a break in time order (it may be recorded after events stamped later, on
+    /// other threads). Measurements already filed that could have been taken across it are
+    /// dropped; any taken wholly after it are filed again. Returns its index.
+    fn insert_break(&mut self, start_ms: u64, why: SegStart) -> usize {
+        let k = self.segments.partition_point(|s| s.start_ms <= start_ms);
+        self.segments.insert(
+            k,
+            Segment {
+                start_ms,
+                why,
+                measurements: Vec::new(),
+            },
+        );
+        let mut moved = Vec::new();
+        for seg in &mut self.segments[..k] {
+            let (late, kept): (Vec<_>, Vec<_>) = seg
+                .measurements
+                .drain(..)
+                .partition(|m| m.at_ms >= start_ms);
+            seg.measurements = kept;
+            moved.extend(late.into_iter().filter(|m| m.from_ms > start_ms));
+        }
+        for m in moved {
+            self.file(m);
+        }
+        k
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -193,7 +250,8 @@ impl History {
         self.anchor = None;
     }
 
-    fn new_segment(&mut self, now: &Stamp, why: SegStart) {
+    /// A break at `now`; returns whether it is now the latest segment of the boot.
+    fn new_segment(&mut self, now: &Stamp, why: SegStart) -> bool {
         if self.boots.last().is_none_or(|b| b.id != now.boot_id) {
             self.boots.push(Boot {
                 id: now.boot_id.clone(),
@@ -201,11 +259,8 @@ impl History {
             });
         }
         let boot = self.boots.last_mut().expect("just pushed");
-        boot.segments.push(Segment {
-            start_ms: now.boot_ms,
-            why,
-            measurements: Vec::new(),
-        });
+        let k = boot.insert_break(now.boot_ms, why);
+        k == boot.segments.len() - 1
     }
 
     /// Records a clock event stamped `now` (taken just after it happened).
@@ -217,31 +272,19 @@ impl History {
                 }
                 // Filed by when it was taken, not by when it arrived: a step or manual
                 // change on another thread may have been recorded first.
-                let began = now.boot_ms.saturating_sub(took_ms);
-                let boot = self.current(now);
-                let n = boot.segments.len();
-                if boot
-                    .segments
-                    .iter()
-                    .skip(1)
-                    .any(|s| s.start_ms >= began && s.start_ms <= now.boot_ms)
-                {
-                    // The clock broke while the query ran (or in its last millisecond):
-                    // the replies may describe either side, so they describe neither.
-                    return;
-                }
-                let Some(i) = boot
-                    .segments
-                    .iter()
-                    .rposition(|s| s.start_ms <= now.boot_ms)
-                else {
-                    return;
-                };
-                let seg = &mut boot.segments[i];
-                seg.measurements.push(Measurement {
+                let m = Measurement {
+                    from_ms: now
+                        .boot_ms
+                        .saturating_sub(took_ms.saturating_add(QUERY_MARGIN_MS)),
                     at_ms: now.boot_ms,
                     offset_ms,
-                });
+                };
+                let boot = self.current(now);
+                let n = boot.segments.len();
+                let Some(i) = boot.file(m) else {
+                    return;
+                };
+                let seg = &boot.segments[i];
                 if i == n - 1 && seg.why == SegStart::Boot && offset_ms.abs() <= CLOSE_MS {
                     // No step needed: the clock, untouched since it was set from the RTC
                     // at boot, agrees with network time.
@@ -249,8 +292,8 @@ impl History {
                 }
             }
             ClockEvent::Stepped { rtc_written } => {
-                self.new_segment(now, SegStart::Step);
-                if rtc_written {
+                let latest = self.new_segment(now, SegStart::Step);
+                if rtc_written && latest {
                     self.set_anchor(now);
                 } else {
                     // The RTC was found more than a second out and could not be fixed.
@@ -392,7 +435,10 @@ impl History {
             for s in &b.segments {
                 out.push(format!("seg\t{}\t{}\t{}", b.id, s.start_ms, s.why.word()));
                 for m in &s.measurements {
-                    out.push(format!("meas\t{}\t{}\t{}", b.id, m.at_ms, m.offset_ms));
+                    out.push(format!(
+                        "meas\t{}\t{}\t{}\t{}",
+                        b.id, m.at_ms, m.from_ms, m.offset_ms
+                    ));
                 }
             }
         }
@@ -437,18 +483,26 @@ impl History {
                         _ => false,
                     }
                 }
-                ["meas", id, ms, off] => match (h.boots.last_mut(), ms.parse(), off.parse()) {
-                    (Some(b), Ok(at_ms), Ok(offset_ms)) if &*b.id == *id => {
-                        match b.segments.last_mut() {
-                            Some(s) => {
-                                s.measurements.push(Measurement { at_ms, offset_ms });
-                                true
+                ["meas", id, ms, from, off] => {
+                    match (h.boots.last_mut(), ms.parse(), from.parse(), off.parse()) {
+                        (Some(b), Ok(at_ms), Ok(from_ms), Ok(offset_ms))
+                            if &*b.id == *id && from_ms <= at_ms =>
+                        {
+                            match b.segments.last_mut() {
+                                Some(s) => {
+                                    s.measurements.push(Measurement {
+                                        from_ms,
+                                        at_ms,
+                                        offset_ms,
+                                    });
+                                    true
+                                }
+                                None => false,
                             }
-                            None => false,
                         }
+                        _ => false,
                     }
-                    _ => false,
-                },
+                }
                 _ => false,
             };
             if !ok {

@@ -910,12 +910,14 @@ impl App {
         };
         let (moved, offset, from_menu) = (picker.secs() - *seed, picker.offset_min(), *from_menu);
         let utc = self.utc_secs() + moved;
+        // Stamped before the clock moves: the break begins then, not after the RTC write.
+        let ra_stamp = self.ra_store.as_ref().map(|ra| ra.stamp());
         if let Some(power) = &mut self.power {
             power.set_clock(utc);
         }
-        if let Some(ra) = &self.ra_store {
+        if let (Some(ra), Some(at)) = (&self.ra_store, ra_stamp) {
             // Breaks the RA clock history: no network measurement reaches across it.
-            ra.clock_event(slot_achievements::store::clock::ClockEvent::Manual);
+            ra.clock_event_at(slot_achievements::store::clock::ClockEvent::Manual, at);
         }
         self.state.utc_offset_min = offset as i16;
         self.state.clock_set = true;
