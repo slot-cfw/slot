@@ -24,7 +24,7 @@ pub mod time;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -261,7 +261,12 @@ struct Shared {
     pending: Mutex<usize>,
     idle: Condvar,
     failing: AtomicBool,
-    progress: Mutex<HashMap<ProgressKey, ProgressCapture>>,
+    /// Waiting captures, each with the order it was offered in ([`Shared::progress_seq`]).
+    progress: Mutex<HashMap<ProgressKey, (u64, ProgressCapture)>>,
+    /// Counts captures offered. A batch writes only captures offered before it began, so
+    /// every unlock sent before a capture is in the ledger before that capture is
+    /// written (an unlock travels through the channel, a capture does not).
+    progress_seq: AtomicU64,
     status: Mutex<StoreStatus>,
     /// Called (on the store thread; must not block) after unlocks reach the ledger: the
     /// network worker sends them.
@@ -383,16 +388,18 @@ impl StoreHandle {
         let Ok(mut slot) = self.shared.progress.lock() else {
             return false;
         };
+        let seq = self.shared.progress_seq.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(waiting) = slot.get_mut(&key) {
-            *waiting = capture;
-            return true;
+            *waiting = (seq, capture);
+        } else {
+            if slot.len() >= PROGRESS_CAP {
+                return false;
+            }
+            slot.insert(key, (seq, capture));
+            self.shared.add_pending(1);
         }
-        if slot.len() >= PROGRESS_CAP {
-            return false;
-        }
-        slot.insert(key, capture);
-        self.shared.add_pending(1);
         drop(slot);
+        // Also for a replacement: a batch already under way may leave it for the next.
         let _ = self.tx.send(Msg::Wake);
         true
     }
@@ -503,7 +510,7 @@ impl StoreHandle {
             .progress
             .lock()
             .ok()
-            .and_then(|p| p.get(key).cloned());
+            .and_then(|p| p.get(key).map(|(_, c)| c.clone()));
         if let Some(c) = waiting {
             return match c.binding(&key.account) {
                 Some(b) if b == want && progress::intact(&c.progress) => {
@@ -712,6 +719,7 @@ impl Store {
             idle: Condvar::new(),
             failing: AtomicBool::new(false),
             progress: Mutex::new(HashMap::new()),
+            progress_seq: AtomicU64::new(0),
             status: Mutex::new(StoreStatus::default()),
             after_unlock: Mutex::new(None),
         });
@@ -789,6 +797,8 @@ struct Worker {
     /// The MD5 of each progress file as last written, so an unchanged one is not
     /// rewritten.
     progress_written: HashMap<PathBuf, [u8; 16]>,
+    /// The last capture offered before this batch began.
+    progress_ready: u64,
 }
 
 /// Returns false if the damaged file could not be kept aside (so it must not be written
@@ -929,8 +939,10 @@ pub fn unlocks_cache(account_key: &str, rom_hash: &str) -> PathBuf {
 }
 
 /// Removes temporary files an interrupted `atomic_write` left (`.<name>.<pid>.<n>.tmp`)
-/// in an earlier process. This process's own are left alone: another thread (the network
-/// worker writing a cache) may be in the middle of one.
+/// in an earlier process. This process's own recent ones are left alone: another thread
+/// (the network worker writing a cache) may be in the middle of one. An old one with this
+/// process's ID is from an earlier boot that happened to get the same ID (likely on an
+/// appliance that starts the same way each time), so it goes too.
 fn sweep_temporaries(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -946,7 +958,13 @@ fn sweep_temporaries(dir: &Path) {
         let mine = rest
             .rsplit_once('.')
             .is_some_and(|(head, _n)| format!("{head}.").ends_with(&own));
-        if name.starts_with('.') && !mine && e.path().is_file() {
+        let recent = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age < Duration::from_secs(600));
+        if name.starts_with('.') && !(mine && recent) && e.path().is_file() {
             let _ = std::fs::remove_file(e.path());
         }
     }
@@ -1038,6 +1056,7 @@ impl Worker {
             deferred_settles: Vec::new(),
             deferred_republished: Vec::new(),
             progress_written: HashMap::new(),
+            progress_ready: 0,
         };
         w.flush();
         w.publish();
@@ -1142,6 +1161,8 @@ impl Worker {
                     Err(_) => return,
                 }
             };
+            // Captures offered from here on wait for the next batch (see progress_seq).
+            self.progress_ready = self.shared.progress_seq.load(Ordering::SeqCst);
             let mut handled = 0;
             let mut stop = false;
             let mut next = first;
@@ -1429,10 +1450,20 @@ impl Worker {
             if self.ledger_dirty || self.ledger_blocked {
                 Vec::new()
             } else {
+                let ready = self.progress_ready;
                 self.shared
                     .progress
                     .lock()
-                    .map(|mut p| p.drain().collect())
+                    .map(|mut p| {
+                        let keys: Vec<ProgressKey> = p
+                            .iter()
+                            .filter(|(_, (seq, _))| *seq <= ready)
+                            .map(|(k, _)| k.clone())
+                            .collect();
+                        keys.into_iter()
+                            .filter_map(|k| p.remove(&k).map(|(_, c)| (k, c)))
+                            .collect()
+                    })
                     .unwrap_or_default()
             };
         for (key, capture) in waiting {

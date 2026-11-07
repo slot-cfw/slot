@@ -601,6 +601,50 @@ fn offering_a_capture_costs_the_game_thread_microseconds() {
     assert!(r.h.settle_for_poweroff(Duration::from_secs(10)));
 }
 
+#[test]
+fn a_capture_offered_after_an_unlock_never_lands_before_it() {
+    let root = tempdir("captureorder");
+    let inner = FakeTime::new("boot-a");
+    let time = Arc::new(SlowTime {
+        inner: inner.clone(),
+        delay_ms: std::sync::atomic::AtomicU64::new(0),
+    });
+    let r = spawn(&root, time.clone());
+    r.settle();
+    let key = ProgressKey {
+        account: "Dean".into(),
+        platform: "GBA".into(),
+        core: "mgba".into(),
+        stem: "Game".into(),
+    };
+    // The store is in the middle of a slow batch...
+    time.delay_ms.store(200, Ordering::SeqCst);
+    r.h.clock_event(ClockEvent::Manual);
+    std::thread::sleep(Duration::from_millis(30));
+    // ...when an unlock (through the channel) and then a capture (shared slot) arrive.
+    r.h.offer_unlock("dean", ROM, 9, inner.now()).unwrap();
+    r.h.offer_progress(
+        key,
+        ProgressCapture {
+            rom_hash: ROM.into(),
+            resume: resume_for(1),
+            progress: framed(b"after the unlock"),
+        },
+    );
+    let progress = root.join("accounts/dean/progress/GBA/mgba/Game.rap");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && !progress.exists() {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(progress.exists());
+    let ledger = ledger_on_card(&root);
+    assert!(
+        ledger.get("dean", 9).is_some(),
+        "the progress file landed before the unlock it follows"
+    );
+    time.delay_ms.store(0, Ordering::SeqCst);
+}
+
 // ---- D5 ----
 
 #[test]
@@ -1175,6 +1219,15 @@ fn leftover_temporary_files_are_swept_at_start() {
     // One this process is writing right now (a cache, on the network worker's thread).
     let own = format!("games/.abc.json.{}.7.tmp", std::process::id());
     std::fs::write(root.join(&own), b"being written").unwrap();
+    // Same ID, but left by an earlier boot an hour ago.
+    let stale = format!(".unlocks.txt.{}.3.tmp", std::process::id());
+    std::fs::write(root.join(&stale), b"half").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(root.join(&stale))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))
+        .unwrap();
     let r = spawn(&root, FakeTime::new("boot-a"));
     r.settle();
     assert!(!root.join(".unlocks.txt.123.0.tmp").exists());
@@ -1183,6 +1236,10 @@ fn leftover_temporary_files_are_swept_at_start() {
     assert!(
         root.join(&own).exists(),
         "a write in progress was swept away"
+    );
+    assert!(
+        !root.join(&stale).exists(),
+        "an earlier boot's leftover was kept"
     );
 }
 

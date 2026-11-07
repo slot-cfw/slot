@@ -667,3 +667,38 @@ fn without_an_owner_nothing_is_captured() {
     let _rx = r.track(&[(1, "0xX000200=5")]);
     assert!(r.emu.snapshot().capture().unwrap().1.is_none());
 }
+
+#[test]
+fn no_progress_is_captured_from_frames_that_were_not_evaluated() {
+    let r = rig();
+    let snap = r.emu.snapshot();
+    let (tx, _rx) = mpsc::channel();
+    r.track_owned(
+        &[(1, "0xH000100=1.1000.")],
+        Box::new(tx),
+        Some(slot::achievements::ProgressOwner {
+            account: "dean".into(),
+            rom_hash: "0123456789abcdef0123456789abcdef".into(),
+        }),
+    );
+    assert!(snap.capture().unwrap().1.is_some());
+    // A link session runs frames without evaluating them: its remembered values go stale.
+    r.emu.begin_link(1, Box::new(LoopbackLink::default()));
+    r.run(5);
+    assert!(
+        snap.capture().unwrap().1.is_none(),
+        "stale progress bound to a newer state"
+    );
+    r.emu.end_link();
+    r.run(3);
+    assert!(snap.capture().unwrap().1.is_some(), "in step again");
+    // A state loaded by hand: new memory under the remembered values until a frame.
+    r.emu.set_speed(Speed::Paused);
+    std::thread::sleep(Duration::from_millis(50));
+    let state = r.emu.request_state().recv().unwrap();
+    r.emu.request_load(state);
+    assert!(snap.capture().unwrap().1.is_none());
+    r.emu.set_speed(Speed::Normal);
+    r.run(3);
+    assert!(snap.capture().unwrap().1.is_some());
+}

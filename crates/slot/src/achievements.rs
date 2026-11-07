@@ -177,6 +177,11 @@ pub(crate) struct Achievements {
     /// The core holds exactly the resume state it was started with: unserialized, and not
     /// run, loaded or rewound since. Saved progress applies only then.
     fresh_resume: bool,
+    /// The runtime has seen every frame the core has run since it was last reset, so its
+    /// remembered values describe the core's memory now. False after a frame that was not
+    /// evaluated (rewind, a link or cable session): progress captured then would bind
+    /// stale values to a newer state, and restoring it could misfire a delta condition.
+    in_step: bool,
 }
 
 impl Achievements {
@@ -197,6 +202,7 @@ impl Achievements {
     /// `run_frame*`: from here on, saved progress no longer describes the core's memory.
     pub(crate) fn core_ran(&mut self) {
         self.fresh_resume = false;
+        self.in_step = false;
     }
 
     /// Captures progress with a state about to be taken for the card. `None` when not
@@ -206,7 +212,7 @@ impl Achievements {
     pub(crate) fn capture(&self) -> Option<CapturedProgress> {
         let t = self.tracker.as_ref()?;
         let owner = t.owner.clone()?;
-        if !t.backlog.is_empty() || t.rewinding {
+        if !self.in_step || !t.backlog.is_empty() || t.rewinding {
             return None;
         }
         let mut bytes = Vec::new();
@@ -256,6 +262,9 @@ impl Achievements {
         for id in loaded.disabled {
             let _ = tracker.events.offer(RaEvent::Disabled(id));
         }
+        // A new runtime has seen nothing and its achievements wait for a false-then-true:
+        // capturing it is safe until the core runs a frame it does not evaluate.
+        self.in_step = true;
         // Saved progress: only onto the exact resume state, once.
         let fresh = std::mem::take(&mut self.fresh_resume);
         if let Some(progress) = plan.progress {
@@ -286,6 +295,8 @@ impl Achievements {
         }
         t.take_map(core);
         let frame = t.eval.frame();
+        // Evaluated (or cancelled, which resets the runtime): in step with the core.
+        self.in_step = true;
         if frame == Frame::Cancelled {
             if t.cancelled == 0 {
                 eprintln!("slot: achievements: a read fell outside the memory map; frames ignored and tracking reset until it does not");
@@ -315,6 +326,8 @@ impl Achievements {
     /// After a state was loaded by hand (the switcher, or Undo Load).
     pub(crate) fn state_loaded(&mut self, core: &mut dyn RetroCore) {
         self.fresh_resume = false;
+        // New memory under remembered values until the next evaluated frame.
+        self.in_step = false;
         if let Some(t) = self.tracker.as_mut() {
             t.take_map(core);
             t.eval.reset();
