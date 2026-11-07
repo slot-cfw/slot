@@ -2001,6 +2001,7 @@ dependencies = [
  "libloading",
  "lz4_flex",
  "png 0.17.16",
+ "slot-achievements",
  "slot-gfx",
  "slot-input",
  "slot-net",
@@ -2010,6 +2011,15 @@ dependencies = [
  "slot-ui",
  "tempfile",
  "winit",
+]
+
+[[package]]
+name = "slot-achievements"
+version = "0.5.0"
+dependencies = [
+ "cc",
+ "libc",
+ "slot-retro",
 ]
 
 [[package]]

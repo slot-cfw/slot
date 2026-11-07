@@ -1,0 +1,22 @@
+[package]
+name = "slot-achievements"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "RetroAchievements evaluation for slot.advance, on rcheevos (vendored, MIT)"
+links = "rcheevos"
+
+[dependencies]
+slot-retro = { path = "../slot-retro" }
+
+[dev-dependencies]
+libc.workspace = true
+
+[build-dependencies]
+cc = "1"
+
+# Runs on the main thread with no harness, so allocator statistics are exact.
+[[test]]
+name = "no_alloc"
+harness = false
