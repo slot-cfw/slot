@@ -155,9 +155,31 @@ struct Shared {
     on_connected: Mutex<Option<OnConnected>>,
     /// A signal reading is queued: another is not added.
     signal_queued: AtomicBool,
+    /// Told of network-time measurements and clock steps as they happen (RetroAchievements
+    /// keeps a clock history from them). Read-only: changes nothing slot-net does.
+    on_time: Mutex<Option<OnTime>>,
 }
 
 type OnConnected = Arc<dyn Fn() + Send + Sync>;
+type OnTime = Arc<dyn Fn(TimeEvent) + Send + Sync>;
+
+/// What happened to the clock, for [`NetJobs::set_on_time`].
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum TimeEvent {
+    /// Network time answered: the system clock was `offset_s` behind it (negative: ahead).
+    Measured { offset_s: f64 },
+    /// The system clock was stepped to network time; `rtc_written` if the RTC followed.
+    Stepped { rtc_written: bool },
+}
+
+impl Shared {
+    fn tell_time(&self, event: TimeEvent) {
+        let hook = self.on_time.lock().ok().and_then(|h| h.clone());
+        if let Some(f) = hook {
+            f(event);
+        }
+    }
+}
 
 impl Shared {
     fn set_link(&self, link: Link) {
@@ -236,6 +258,7 @@ impl NetJobs {
             next_ack: AtomicU64::new(1),
             on_connected: Mutex::new(None),
             signal_queued: AtomicBool::new(false),
+            on_time: Mutex::new(None),
         });
         let worker = Worker {
             wifi,
@@ -378,15 +401,19 @@ impl NetJobs {
                         );
                         // Only after a successful step; a failure here leaves the
                         // corrected system clock as it is.
-                        match (self.write_rtc)() {
-                            RtcWrite::Written(took) => eprintln!(
-                                "slot: time: RTC written in {} ms",
-                                took.as_millis()
-                            ),
-                            RtcWrite::Failed(why) => eprintln!(
-                                "slot: time: FAILED to write the RTC ({why}); the system clock correction stands"
-                            ),
-                        }
+                        let rtc_written = match (self.write_rtc)() {
+                            RtcWrite::Written(took) => {
+                                eprintln!("slot: time: RTC written in {} ms", took.as_millis());
+                                true
+                            }
+                            RtcWrite::Failed(why) => {
+                                eprintln!(
+                                    "slot: time: FAILED to write the RTC ({why}); the system clock correction stands"
+                                );
+                                false
+                            }
+                        };
+                        self.shared.tell_time(TimeEvent::Stepped { rtc_written });
                     }
                     Err(e) => eprintln!(
                         "slot: time: the clock could not be corrected: {e} (RTC not written)"
@@ -395,6 +422,15 @@ impl NetJobs {
                 self.shared.clock_done.store(true, Ordering::SeqCst);
             }
             Decision::Stale => self.send(Job::AskTime),
+        }
+    }
+
+    /// Called as each network-time answer arrives (on the network thread) and straight after
+    /// a clock step (on the game thread, inside `idle_moment`). It must not block. Events
+    /// before it was set are not replayed: whoever sets it late cannot place them in time.
+    pub fn set_on_time(&self, f: impl Fn(TimeEvent) + Send + Sync + 'static) {
+        if let Ok(mut h) = self.shared.on_time.lock() {
+            *h = Some(Arc::new(f));
         }
     }
 
@@ -753,6 +789,9 @@ impl Worker {
                 if let Ok(mut slot) = self.shared.offer.lock() {
                     *slot = Some(o);
                 }
+                self.shared.tell_time(TimeEvent::Measured {
+                    offset_s: o.offset_s,
+                });
             }
             None if token.is_cancelled() => {}
             None => eprintln!("slot: time: no reply from the router or pool.ntp.org"),
@@ -1217,6 +1256,74 @@ mod tests {
         wait_for("an answer", || jobs.shared.offer.lock().unwrap().is_some());
         jobs.idle_moment();
         assert!(jobs.clock_done());
+    }
+
+    /// A rig with the time hook set before Wi-Fi connects, as RetroAchievements sets it at
+    /// start-up.
+    fn timed_rig(
+        offset: &str,
+        step: fn(f64) -> std::io::Result<()>,
+        rtc: fn() -> RtcWrite,
+    ) -> (NetJobs, Arc<Mutex<Vec<TimeEvent>>>, tempfile::TempDir) {
+        let f = FakeSys::new();
+        let sim = Sim::new(&f);
+        sim.add_network("Home", Some("home pass"), -50);
+        sim.state.lock().unwrap().ntp_output =
+            format!("ntpd: reply from 192.168.4.1: offset:{offset} delay:0.004\n");
+        let d = card();
+        let mut w = wifi(&f, &sim, d.path());
+        w.saved.remember(
+            b"Home",
+            crate::wifi::key_for(b"Home", Some("home pass")).unwrap(),
+        );
+        let jobs = NetJobs::spawn_with(w, step, rtc);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        jobs.set_on_time(move |e| s.lock().unwrap().push(e));
+        wait_for("an answer", || jobs.shared.offer.lock().unwrap().is_some());
+        wait_for("told", || !seen.lock().unwrap().is_empty());
+        (jobs, seen, d)
+    }
+
+    fn written_rtc() -> RtcWrite {
+        RtcWrite::Written(Duration::from_millis(3))
+    }
+
+    #[test]
+    fn the_time_hook_hears_each_measurement_and_step_and_changes_nothing() {
+        let (jobs, seen, _d) = timed_rig("+36.35", ok_step, written_rtc);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![TimeEvent::Measured { offset_s: 36.35 }]
+        );
+        assert!(!jobs.clock_done(), "the hook does not apply anything");
+        jobs.idle_moment();
+        assert_eq!(
+            seen.lock().unwrap()[1..],
+            [TimeEvent::Stepped { rtc_written: true }]
+        );
+        assert!(jobs.clock_done());
+    }
+
+    #[test]
+    fn the_time_hook_hears_a_failed_rtc_write_and_nothing_for_a_failed_step() {
+        let (jobs, seen, _d) = timed_rig("+36.35", ok_step, failing_rtc);
+        jobs.idle_moment();
+        assert_eq!(
+            seen.lock().unwrap()[1..],
+            [TimeEvent::Stepped { rtc_written: false }]
+        );
+        let (jobs, seen, _d) = timed_rig("+36.35", failing_step, no_rtc);
+        jobs.idle_moment();
+        assert_eq!(seen.lock().unwrap().len(), 1, "the clock did not move");
+        let (jobs, seen, _d) = timed_rig("-0.44", no_step, no_rtc);
+        jobs.idle_moment();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![TimeEvent::Measured { offset_s: -0.44 }],
+            "close enough: measured, never stepped"
+        );
+        drop(jobs);
     }
 
     #[test]
