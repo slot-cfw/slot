@@ -139,6 +139,9 @@ pub fn run() {
         if slot_store::read_slot_state(&root).syncthing {
             sync.enable();
         }
+        // RetroAchievements (0.6.0) hears connections and network time through slot-net;
+        // its threads start only if it is On.
+        frontend.set_ra_jobs(jobs.clone());
         frontend.set_net(Box::new(slot::net::WifiOn::new(jobs).with_sync(sync)));
     }
     slot::boot_time::mark("frontend");

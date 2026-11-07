@@ -24,6 +24,8 @@ pub enum QuickRow {
     Titles,
     /// Wi-Fi (0.5.0), opening the Network menu.
     Network,
+    /// RetroAchievements (0.6.0), opening its own menu (D10).
+    RetroAchievements,
     /// The in-game menu (0.5.0): back to the paused game.
     Resume,
     /// The in-game menu: the save-state switcher.
@@ -35,7 +37,7 @@ pub enum QuickRow {
 }
 
 impl QuickRow {
-    pub const ALL: [QuickRow; 21] = [
+    pub const ALL: [QuickRow; 22] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Screen,
@@ -53,6 +55,7 @@ impl QuickRow {
         QuickRow::Sleep,
         QuickRow::Titles,
         QuickRow::Network,
+        QuickRow::RetroAchievements,
         QuickRow::Resume,
         QuickRow::States,
         QuickRow::Settings,
@@ -68,10 +71,11 @@ impl QuickRow {
         QuickRow::ExitGame,
     ];
 
-    pub const MAIN: [QuickRow; 6] = [
+    pub const MAIN: [QuickRow; 7] = [
         QuickRow::Screen,
         QuickRow::Game,
         QuickRow::Network,
+        QuickRow::RetroAchievements,
         QuickRow::Sleep,
         QuickRow::DateTime,
         QuickRow::About,
@@ -169,6 +173,7 @@ impl QuickRow {
             QuickRow::Sleep => "Sleep",
             QuickRow::Titles => "Show Game Titles",
             QuickRow::Network => "Network",
+            QuickRow::RetroAchievements => "RetroAchievements",
             QuickRow::Resume => "Resume",
             QuickRow::States => "States",
             QuickRow::Settings => "Settings",
@@ -184,6 +189,7 @@ impl QuickRow {
                 | QuickRow::Screen
                 | QuickRow::Game
                 | QuickRow::Network
+                | QuickRow::RetroAchievements
                 | QuickRow::Resume
                 | QuickRow::States
                 | QuickRow::Settings

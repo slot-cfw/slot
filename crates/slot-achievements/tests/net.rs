@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use slot_achievements::api::{Call, Pause, Reply};
 use slot_achievements::fake;
-use slot_achievements::net::{Event, Link, Transport, Worker, WorkerHandle};
+use slot_achievements::net::{Event, Link, LoginProblem, Transport, Worker, WorkerHandle};
 use slot_achievements::store::account::Account;
 use slot_achievements::store::clock::ClockEvent;
 use slot_achievements::store::ledger::{self, Ledger, Status};
@@ -370,11 +370,12 @@ fn log_in_keeps_the_token_never_the_password() {
         Server::default(),
         Wifi::new(true),
     );
-    r.w.log_in("dean", "correct horse".to_string());
+    r.w.log_in("dean", "correct horse".to_string(), 7);
     let e = r.events.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(
         e,
         Event::LoggedIn {
+            ticket: 7,
             user: "Dean".into()
         }
     );
@@ -392,14 +393,26 @@ fn a_wrong_password_says_so_and_wifi_off_asks_to_connect() {
     r.wifi.on.store(true, Ordering::SeqCst);
     r.server
         .with(|s| s.login_answer = Some(fake::invalid_credentials()));
-    r.w.log_in("dean", "nope".to_string());
+    r.w.log_in("dean", "nope".to_string(), 1);
     let e = r.events.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert!(matches!(e, Event::LoginFailed(m) if m.contains("Invalid user/password")));
+    assert_eq!(
+        e,
+        Event::LoginFailed {
+            ticket: 1,
+            problem: LoginProblem::WrongPassword
+        }
+    );
     r.wifi.on.store(false, Ordering::SeqCst);
     let before = r.server.count();
-    r.w.log_in("dean", "x".to_string());
+    r.w.log_in("dean", "x".to_string(), 2);
     let e = r.events.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert_eq!(e, Event::LoginFailed("Connect to Wi-Fi to log in".into()));
+    assert_eq!(
+        e,
+        Event::LoginFailed {
+            ticket: 2,
+            problem: LoginProblem::Offline
+        }
+    );
     assert_eq!(r.server.count(), before, "nothing sent with Wi-Fi off");
 }
 
@@ -484,7 +497,7 @@ fn an_expired_token_pauses_and_keeps_the_queue_until_log_in() {
     r.quiet();
     assert_eq!(r.server.calls("login2").len(), 1);
     r.server.with(|s| s.login_answer = None);
-    r.w.log_in("dean", "pw".into());
+    r.w.log_in("dean", "pw".into(), 1);
     wait("logged in", 5, || {
         matches!(r.events.try_recv(), Ok(Event::LoggedIn { .. }))
     });
@@ -793,10 +806,11 @@ fn a_game_with_no_cache_is_fetched_and_handed_back_one_with_a_cache_only_refresh
         s.session_unlocks = vec![11];
     });
     r.connect();
-    r.w.game(ROM, false);
+    r.w.game(ROM, false, 1);
     let e = r.events.recv_timeout(Duration::from_secs(5)).unwrap();
     match e {
         Event::GameReady {
+            ticket: 1,
             rom_hash,
             account,
             game,
@@ -822,7 +836,7 @@ fn a_game_with_no_cache_is_fetched_and_handed_back_one_with_a_cache_only_refresh
         .exists());
     // Next launch: a cache exists. A changed set is cached, never handed back during play.
     r.server.with(|s| s.game = Some(v2.clone()));
-    r.w.game(ROM, true);
+    r.w.game(ROM, true, 1);
     r.quiet();
     assert!(
         r.events.try_recv().is_err(),
@@ -847,13 +861,13 @@ fn a_rejected_unlock_goes_back_to_pending_once_when_published_again() {
     r.server.with(|s| {
         s.game = Some(fake::game_sets(510, 5, "C", &[fake::def(12, "0xH0=1")]));
     });
-    r.w.game(ROM, true);
+    r.w.game(ROM, true, 1);
     wait("rejected again", 5, || {
         r.ledger().get("dean", 12).is_some_and(|e| e.attempts == 2)
     });
     assert_eq!(r.status_of(12), Some(Status::Rejected));
     // Published again a second time: stays rejected (once only).
-    r.w.game(ROM, true);
+    r.w.game(ROM, true, 1);
     r.quiet();
     assert_eq!(r.status_of(12), Some(Status::Rejected));
     assert_eq!(r.server.calls("awardachievement").len(), 2);
@@ -890,7 +904,7 @@ fn a_rejection_after_earlier_failed_attempts_still_goes_back_to_pending_once() {
     r.server.with(|s| {
         s.game = Some(fake::game_sets(510, 5, "C", &[fake::def(12, "0xH0=1")]));
     });
-    r.w.game(ROM, true);
+    r.w.game(ROM, true, 1);
     wait("sent again", 5, || {
         r.server.calls("awardachievement").len() == 3
     });
@@ -898,7 +912,7 @@ fn a_rejection_after_earlier_failed_attempts_still_goes_back_to_pending_once() {
         r.status_of(12) == Some(Status::Rejected)
     });
     assert!(r.ledger().get("dean", 12).unwrap().republished);
-    r.w.game(ROM, true);
+    r.w.game(ROM, true, 1);
     r.quiet();
     assert_eq!(r.server.calls("awardachievement").len(), 3, "once only");
 }
@@ -946,7 +960,7 @@ fn a_failing_definitions_request_never_holds_back_unlocks() {
         s.sets_answers = vec![Ok(fake::gateway(503)); 5];
     });
     r.unlock(1);
-    r.w.game(ROM, false);
+    r.w.game(ROM, false, 1);
     r.connect();
     wait("synced", 5, || r.status_of(1) == Some(Status::Synced));
     // A JSON failure the server explains with no code: dropped, not retried for ever.
@@ -1060,7 +1074,7 @@ fn a_round_with_two_failures_backs_off_once() {
         s.award_answers.insert(1, vec![Ok(fake::gateway(503))]);
     });
     r.unlock(1);
-    r.w.game(ROM, false);
+    r.w.game(ROM, false, 1);
     r.connect();
     r.quiet();
     assert_eq!(r.server.calls("achievementsets").len(), 1);
@@ -1084,7 +1098,7 @@ fn a_log_in_cancelled_by_log_out_never_sends_the_password() {
         !r.server.calls("awardachievement").is_empty()
     });
     // Both queued behind the request in flight.
-    r.w.log_in("Dean", "hunter2".into());
+    r.w.log_in("Dean", "hunter2".into(), 1);
     r.w.log_out();
     wait("logged out", 5, || r.h.account().is_none());
     std::thread::sleep(Duration::from_millis(500));
@@ -1098,7 +1112,7 @@ fn a_log_in_cancelled_by_log_out_never_sends_the_password() {
     assert!(
         !r.events
             .try_iter()
-            .any(|e| matches!(e, Event::LoginFailed(_))),
+            .any(|e| matches!(e, Event::LoginFailed { .. })),
         "no error shown for a log-in that was cancelled"
     );
 }
@@ -1145,7 +1159,7 @@ fn a_session_start_cut_off_by_wifi_dropping_is_fetched_again() {
         s.wifi_off_after_sets = Some(r.wifi.on.clone());
     });
     r.connect();
-    r.w.game(ROM, false);
+    r.w.game(ROM, false, 1);
     r.quiet();
     assert!(r.server.calls("startsession").is_empty(), "never sent");
     assert!(
@@ -1173,8 +1187,8 @@ fn a_failing_game_waits_behind_the_other_games() {
         ));
         s.sets_answers = vec![Ok(fake::gateway(503))];
     });
-    r.w.game(ROM, true);
-    r.w.game(other, true);
+    r.w.game(ROM, true, 1);
+    r.w.game(other, true, 1);
     r.connect();
     r.quiet();
     r.w.connected();

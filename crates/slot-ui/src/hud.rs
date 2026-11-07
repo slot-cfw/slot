@@ -139,6 +139,8 @@ pub struct Hud {
     headphones: bool,
     ff: FfState,
     said: Option<(Toast, Millis)>,
+    /// A RetroAchievements unlock notice (0.6.0): its face, size and when it was shown.
+    achievement: Option<(TexId, u32, u32, Millis)>,
     alarm: Option<Millis>,
     icons: Vec<TexId>,
     toasts: Vec<TexId>,
@@ -161,6 +163,25 @@ impl Hud {
 
     pub fn toast(&mut self, toast: Toast, now: Millis) {
         self.said = Some((toast, now));
+        // The newest notice wins the bar; an unlock notice it covers is not shown again
+        // (its unlock is kept regardless).
+        self.achievement = None;
+    }
+
+    /// An unlock notice, drawn in the top bar like a toast, for `ACHIEVEMENT_MS`.
+    pub fn show_achievement(&mut self, face: TexId, w: u32, h: u32, now: Millis) {
+        self.achievement = Some((face, w, h, now));
+        self.said = None;
+    }
+
+    /// Takes the unlock notice off the bar at once (a menu opened over the game).
+    pub fn clear_achievement(&mut self) {
+        self.achievement = None;
+    }
+
+    /// An unlock notice is on screen.
+    pub fn achievement_visible(&self, now: Millis) -> bool {
+        self.achievement_alpha(now) > 0.0
     }
 
     pub fn set_alarm(&mut self, on: bool, now: Millis) {
@@ -333,6 +354,18 @@ impl Hud {
         if alpha <= 0.0 {
             return;
         }
+        if let Some((tex, w, h, _)) = self.achievement.filter(|_| self.achievement_visible(now)) {
+            let (w, h) = (w as f32, h as f32);
+            out.push(Draw::Tex {
+                x: ((OUT_W as f32 - w) / 2.0).round(),
+                y: (PLATE_H / 2.0 - h / 2.0).round(),
+                w,
+                h,
+                tex,
+                alpha,
+            });
+            return;
+        }
         let Some(tex) = self
             .said
             .and_then(|(t, _)| self.toasts.get(t.index()))
@@ -379,17 +412,28 @@ impl Hud {
     fn toast_alpha(&self, now: Millis) -> f32 {
         match self.said {
             Some((_, shown)) => fade(shown, now),
+            None => self.achievement_alpha(now),
+        }
+    }
+
+    fn achievement_alpha(&self, now: Millis) -> f32 {
+        match self.achievement {
+            Some((.., shown)) => fade_for(shown, now, crate::toast::ACHIEVEMENT_MS),
             None => 0.0,
         }
     }
 }
 
 fn fade(shown: Millis, now: Millis) -> f32 {
+    fade_for(shown, now, HUD_MS)
+}
+
+fn fade_for(shown: Millis, now: Millis, total: Millis) -> f32 {
     let age = now.saturating_sub(shown);
-    if age >= HUD_MS {
+    if age >= total {
         return 0.0;
     }
-    ((HUD_MS - age) as f32 / FADE_MS as f32).min(1.0)
+    ((total - age) as f32 / FADE_MS as f32).min(1.0)
 }
 
 fn pulse(age: Millis) -> [f32; 4] {

@@ -33,6 +33,8 @@ pub enum InGame {
     Row(QuickRow),
     /// The Network menu, opened from Settings (`App::net_menu` holds its screens).
     Network,
+    /// The RetroAchievements menu, opened from Settings (`App::ra_menu` holds its screens).
+    Achievements,
     /// About, opened from Settings.
     About,
 }
@@ -106,6 +108,7 @@ impl App {
                 }
             }
             InGame::Network => self.net_menu_input(action),
+            InGame::Achievements => self.ra_menu_input(action),
         }
     }
 
@@ -153,6 +156,10 @@ impl App {
                 self.net_menu = Some(crate::net_menu::NetMenu::new());
                 self.net.sync_menu_opened();
                 self.in_game = Some(InGame::Network);
+            }
+            QuickRow::RetroAchievements => {
+                self.ra_menu = Some(crate::ra_menu::RaMenu::new());
+                self.in_game = Some(InGame::Achievements);
             }
             QuickRow::About => self.in_game = Some(InGame::About),
             _ => {
@@ -265,6 +272,7 @@ impl App {
         }
         self.in_game = match self.in_game {
             Some(InGame::Network) => Some(InGame::Row(QuickRow::Network)),
+            Some(InGame::Achievements) => Some(InGame::Row(QuickRow::RetroAchievements)),
             Some(InGame::About) => Some(InGame::Row(QuickRow::About)),
             other => other,
         };
@@ -278,8 +286,10 @@ impl App {
             self.phase,
             Phase::Playing { .. } | Phase::Doze { cart: Some(_) } | Phase::Polaroids { .. }
         ) {
-            if self.in_game.take() == Some(InGame::Network) {
-                self.net_menu = None;
+            match self.in_game.take() {
+                Some(InGame::Network) => self.net_menu = None,
+                Some(InGame::Achievements) => self.close_ra_menu(),
+                _ => {}
             }
             self.states_from_menu = false;
             self.menu_tap = None;
@@ -300,6 +310,7 @@ impl App {
                 .draw(out);
             }
             InGame::Network => draw_about(self.net_face, out),
+            InGame::Achievements => draw_about(self.ra_face, out),
             InGame::About => draw_about(self.about_face, out),
         }
     }

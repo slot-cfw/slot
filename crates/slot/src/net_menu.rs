@@ -571,6 +571,7 @@ impl NetMenu {
             Screen::Menu { row } => {
                 let rows = Self::rows(net, wifi, sync);
                 NetView::Menu {
+                    title: "Network",
                     selected: Self::select(&rows, *row, 0),
                     rows: rows.into_iter().map(|(_, r)| r).collect(),
                     status: status_lines(net, wifi),

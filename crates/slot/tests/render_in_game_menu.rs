@@ -158,12 +158,12 @@ fn the_in_game_menu_and_settings_draw_in_the_carousel_settings_look() {
     tap(&mut f, &mut input, Btn::A);
     assert_eq!(f.app().in_game(), Some(InGame::Row(QuickRow::Screen)));
     let px = shot(&mut f, &mut c, "06-settings-in-game");
-    bar_at(&px, 5, 0, "settings");
-    for _ in 0..3 {
+    bar_at(&px, 6, 0, "settings");
+    for _ in 0..4 {
         tap(&mut f, &mut input, Btn::Down);
     }
     let px = shot(&mut f, &mut c, "07-settings-in-game-sleep");
-    bar_at(&px, 5, 3, "sleep");
+    bar_at(&px, 6, 4, "sleep");
     for _ in 0..2 {
         tap(&mut f, &mut input, Btn::Down);
     }
@@ -184,6 +184,16 @@ fn the_in_game_menu_and_settings_draw_in_the_carousel_settings_look() {
     run_for(&mut f, &mut input, 0.1);
     shot(&mut f, &mut c, "10-network-in-game");
     tap(&mut f, &mut input, Btn::B);
+    tap(&mut f, &mut input, Btn::Down);
+    tap(&mut f, &mut input, Btn::A);
+    assert_eq!(f.app().in_game(), Some(InGame::Achievements));
+    run_for(&mut f, &mut input, 0.1);
+    shot(&mut f, &mut c, "10b-retroachievements-in-game");
+    tap(&mut f, &mut input, Btn::B);
+    assert_eq!(
+        f.app().in_game(),
+        Some(InGame::Row(QuickRow::RetroAchievements))
+    );
     tap(&mut f, &mut input, Btn::Down);
     tap(&mut f, &mut input, Btn::Down);
     tap(&mut f, &mut input, Btn::A);

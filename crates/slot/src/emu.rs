@@ -84,6 +84,8 @@ enum Cmd {
     BeginCable(u8, Box<dyn LinkChannel>),
     SetOption(String, String),
     Achievements(Option<AchievementPlan>),
+    /// Stop tracking, handing every unlock still held to the RA store, then say so.
+    StopAchievements(Sender<()>),
 }
 
 struct Shared {
@@ -120,6 +122,21 @@ struct Clock {
     done: u64,
 }
 
+/// The resume state a game starts from: owned, or shared with RetroAchievements.
+enum StartState {
+    Owned(Vec<u8>),
+    Shared(Arc<[u8]>),
+}
+
+impl StartState {
+    fn len(&self) -> usize {
+        match self {
+            StartState::Owned(b) => b.len(),
+            StartState::Shared(b) => b.len(),
+        }
+    }
+}
+
 impl EmuHandle {
     pub fn spawn(
         core: Box<dyn RetroCore>,
@@ -128,7 +145,20 @@ impl EmuHandle {
         sav: Option<Vec<u8>>,
         resume: Option<Vec<u8>>,
     ) -> Self {
-        Self::spawn_as(core, rom, ring, sav, resume, None)
+        Self::spawn_as(core, rom, ring, sav, resume.map(StartState::Owned), None)
+    }
+
+    /// As [`EmuHandle::spawn`], with the resume state shared rather than owned: the same
+    /// bytes, from the same read, that RetroAchievements checks saved progress against
+    /// (0.6.0 Phase 5). Never copied.
+    pub fn spawn_shared(
+        core: Box<dyn RetroCore>,
+        rom: PathBuf,
+        ring: Arc<Ring>,
+        sav: Option<Vec<u8>>,
+        resume: Option<Arc<[u8]>>,
+    ) -> Self {
+        Self::spawn_as(core, rom, ring, sav, resume.map(StartState::Shared), None)
     }
 
     pub fn spawn_linked(
@@ -139,7 +169,14 @@ impl EmuHandle {
         resume: Option<Vec<u8>>,
         player: u8,
     ) -> Self {
-        Self::spawn_as(core, rom, ring, sav, resume, Some(player))
+        Self::spawn_as(
+            core,
+            rom,
+            ring,
+            sav,
+            resume.map(StartState::Owned),
+            Some(player),
+        )
     }
 
     /// Never write this game's save RAM back to the card, as if the core had refused it.
@@ -157,7 +194,7 @@ impl EmuHandle {
         rom: PathBuf,
         ring: Arc<Ring>,
         sav: Option<Vec<u8>>,
-        resume: Option<Vec<u8>>,
+        resume: Option<StartState>,
         player: Option<u8>,
     ) -> Self {
         let rumble = core.rumble();
@@ -258,6 +295,15 @@ impl EmuHandle {
     /// later phase decides when to start it. Unlocks are reported on the plan's channel.
     pub fn set_achievements(&self, plan: Option<AchievementPlan>) {
         request(&self.cmds, &self.shared, Cmd::Achievements(plan));
+    }
+
+    /// Stops tracking. The answer comes once every unlock the emulator thread still held
+    /// has been handed to the RA store (or at once if the emulator thread has gone), so the
+    /// store can then be stopped without losing one. Never waited for on the game thread.
+    pub fn stop_achievements(&self) -> Receiver<()> {
+        let (tx, rx) = channel();
+        request(&self.cmds, &self.shared, Cmd::StopAchievements(tx));
+        rx
     }
 
     pub fn end_link(&self) {
@@ -513,7 +559,7 @@ impl Worker {
         rom: PathBuf,
         ring: Arc<Ring>,
         sav: Option<Vec<u8>>,
-        resume: Option<Vec<u8>>,
+        resume: Option<StartState>,
         link: Link,
     ) {
         eprintln!(
@@ -547,7 +593,12 @@ impl Worker {
                 resume.len(),
                 crate::boot_time::ms()
             );
-            match core.unserialize(&self.for_core(resume)) {
+            let unserialized = match resume {
+                StartState::Shared(bytes) if self.player.is_none() => core.unserialize(&bytes),
+                StartState::Shared(bytes) => core.unserialize(&self.for_core(bytes.to_vec())),
+                StartState::Owned(bytes) => core.unserialize(&self.for_core(bytes)),
+            };
+            match unserialized {
                 Ok(()) => resumed = true,
                 Err(e) => {
                     eprintln!("slot: resume: {e}");
@@ -1012,6 +1063,10 @@ impl Worker {
                 core.set_option(&key, &value);
             }
             Cmd::Achievements(plan) => ra.set(plan, core),
+            Cmd::StopAchievements(done) => {
+                ra.set(None, core);
+                let _ = done.send(());
+            }
             Cmd::EndLink => {
                 self.shared.link_lost.store(false, Ordering::Relaxed);
                 self.shared.peer_ended.store(false, Ordering::Relaxed);

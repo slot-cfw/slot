@@ -65,7 +65,7 @@ pub use link_art::{
     ARROW_LEFT_X, ARROW_RIGHT_X, ARROW_W, ARROW_Y, CLICKS_H, CLICKS_W, CLICKS_X, CLICKS_Y, PLUG_H,
     PLUG_TIP_X, PLUG_W, PORT_H, PORT_W, PORT_Y,
 };
-pub use network::{net_face, KeyboardView, ListRow, MenuRow, NetView};
+pub use network::{net_face, wrap_status, KeyboardView, ListRow, MenuRow, NetView, MENU_TOP};
 pub use plate::{
     arrows_hint_face, arrows_hint_width, cap_width, centred_hints, hint_face, hint_quad, hint_row,
     hint_width, title_face, word_face, word_width, Hint, UndoFace, ARROW_GAP, CAP, CAP_GAP,
@@ -97,5 +97,8 @@ pub use title::{
     TitleFaces, TitleTex, MARQUEE_DELAY_S, MARQUEE_END_S, MARQUEE_SPEED, TITLE_FACE_H, TITLE_GAP,
     TITLE_VIEW_W,
 };
-pub use toast::{toast_box, toast_face, toast_rect, Toast};
+pub use toast::{
+    achievement_layout, achievement_toast_face, toast_box, toast_face, toast_rect, Toast,
+    ACHIEVEMENT_MS, ACHIEVEMENT_W,
+};
 pub use wifi_icon::{draw_wifi_icon, wifi_icon_face, wifi_icon_xy, WifiIcon, WIFI_H, WIFI_W};

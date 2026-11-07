@@ -48,6 +48,9 @@ pub struct MenuRow {
     pub greyed: bool,
     /// Its value drawn in the bright menu ink even when not lit (Service: Error).
     pub emphasis: bool,
+    /// What A does, when it is not "Change" or "Open" (RetroAchievements' Account row:
+    /// "Log In" or "Log Out").
+    pub action: Option<&'static str>,
 }
 
 impl MenuRow {
@@ -60,6 +63,7 @@ impl MenuRow {
             selectable: true,
             greyed: false,
             emphasis: false,
+            action: None,
         }
     }
 
@@ -72,6 +76,7 @@ impl MenuRow {
             selectable: true,
             greyed: false,
             emphasis: false,
+            action: None,
         }
     }
 
@@ -84,6 +89,21 @@ impl MenuRow {
             selectable: false,
             greyed: false,
             emphasis: false,
+            action: None,
+        }
+    }
+
+    /// A value that A acts on, with the legend saying what A does (RetroAchievements'
+    /// Account row). No arrows: Left and Right do nothing.
+    pub fn acts(label: &'static str, value: &str, action: &'static str) -> MenuRow {
+        MenuRow {
+            label,
+            value: Some(value.to_string()),
+            changes: false,
+            selectable: true,
+            greyed: false,
+            emphasis: false,
+            action: Some(action),
         }
     }
 
@@ -118,6 +138,10 @@ pub struct ListRow {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyboardView {
+    /// The small line at the top: "Wi-Fi password", or a RetroAchievements step (0.6.0).
+    pub title: &'static str,
+    /// What START and the Done key do: "Join", "Next", "Log In".
+    pub confirm: &'static str,
     pub heading: String,
     pub field: String,
     pub page: crate::keyboard::KeyPage,
@@ -136,6 +160,8 @@ impl KeyboardView {
             .collect();
         keys.push(Special::ROW.iter().map(|s| Key::Special(*s)).collect());
         KeyboardView {
+            title: "Wi-Fi password",
+            confirm: "Join",
             heading,
             field: kb.field(),
             page: kb.page,
@@ -146,6 +172,15 @@ impl KeyboardView {
             keys,
         }
     }
+
+    /// The same keyboard under another title, with another confirm label.
+    pub fn titled(self, title: &'static str, confirm: &'static str) -> KeyboardView {
+        KeyboardView {
+            title,
+            confirm,
+            ..self
+        }
+    }
 }
 
 /// What a Network screen shows. The face is rebuilt whenever this changes. Its `Debug`
@@ -153,6 +188,8 @@ impl KeyboardView {
 #[derive(Clone, PartialEq, Eq)]
 pub enum NetView {
     Menu {
+        /// The heading: "Network", or "RetroAchievements" (0.6.0), drawn the same way.
+        title: &'static str,
         rows: Vec<MenuRow>,
         selected: usize,
         status: Vec<String>,
@@ -184,11 +221,13 @@ impl std::fmt::Debug for NetView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NetView::Menu {
+                title,
                 rows,
                 selected,
                 status,
             } => f
                 .debug_struct("Menu")
+                .field("title", title)
                 .field("rows", rows)
                 .field("selected", selected)
                 .field("status", status)
@@ -486,10 +525,11 @@ pub fn net_face(view: &NetView) -> UndoFace {
     let mut c = Canvas::new();
     match view {
         NetView::Menu {
+            title,
             rows,
             selected,
             status,
-        } => draw_menu(&mut c, rows, *selected, status),
+        } => draw_menu(&mut c, title, rows, *selected, status),
         NetView::List {
             rows,
             selected,
@@ -525,14 +565,61 @@ pub fn net_face(view: &NetView) -> UndoFace {
 /// (approved by Dean, 25 Oct 2026). The highest position that still leaves two status lines
 /// clear of the legend with five rows.
 pub const MENU_TOP: f32 = 84.0;
+/// `text` as the menu's status lines: wrapped between words into at most
+/// [`STATUS_LINES`] lines that fit between the margins at the status size (the last one
+/// shortened with "..." if the text is longer still). For a message that is not ours, such
+/// as the reason RetroAchievements gives for refusing an account.
+pub fn wrap_status(text: &str) -> Vec<String> {
+    let max_w = OUT_W as f32 - 2.0 * EDGE_X;
+    let measure =
+        |s: &str| text::label_font().map_or(0.0, |f| text::line_width(f, s, STATUS_PX, 0.0));
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(l) if measure(&format!("{l} {word}")) <= max_w => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    if lines.len() > STATUS_LINES {
+        let rest = lines.split_off(STATUS_LINES - 1).join(" ");
+        lines.push(rest);
+    }
+    // The last line is shortened when drawn (`centred_truncated`).
+    lines
+}
+
+/// The least space between a menu row's label and its value.
+const VALUE_GAP: f32 = 32.0;
+/// A long menu value shrinks to this size before it is shortened.
+const VALUE_MIN_PX: f32 = 18.0;
+
+/// How wide `print_fit` draws `s` within `max_w`.
+fn fitted_width(c: &Canvas, s: &str, px: f32, min_px: f32, max_w: f32) -> f32 {
+    let mut size = px;
+    while size > min_px && c.measure(s, size, true) > max_w {
+        size -= 1.0;
+    }
+    if c.measure(s, size, true) <= max_w {
+        return c.measure(s, size, true);
+    }
+    let mut cut: String = s.to_string();
+    while !cut.is_empty() && c.measure(&format!("{cut}..."), size, true) > max_w {
+        cut.pop();
+    }
+    c.measure(&format!("{cut}..."), size, true)
+}
+
 /// From the last row to the first status line.
 const STATUS_GAP: f32 = 20.0;
 /// At most this many status lines under the menu; each is one line, never wrapped.
 pub const STATUS_LINES: usize = 2;
 
-fn draw_menu(c: &mut Canvas, rows: &[MenuRow], selected: usize, status: &[String]) {
+fn draw_menu(c: &mut Canvas, title: &str, rows: &[MenuRow], selected: usize, status: &[String]) {
     let top = MENU_TOP;
-    c.centred(40.0, "Network", 22.0, DIM, true);
+    c.centred(40.0, title, 22.0, DIM, true);
     for (i, row) in rows.iter().enumerate() {
         let y = top + PITCH * i as f32;
         let lit = i == selected && row.selectable;
@@ -540,7 +627,7 @@ fn draw_menu(c: &mut Canvas, rows: &[MenuRow], selected: usize, status: &[String
             bar(c, y);
         }
         let label_ink = if row.greyed { DIM } else { MENU_INK };
-        c.print(
+        let label_w = c.print(
             EDGE_X,
             y + MENU_TEXT_DY,
             row.label,
@@ -555,16 +642,40 @@ fn draw_menu(c: &mut Canvas, rows: &[MenuRow], selected: usize, status: &[String
                 DIM
             };
             let right = OUT_W as f32 - EDGE_X;
-            let w = c.measure(v, MENU_PX, true);
+            // A value never reaches its label: a long one (a RetroAchievements user name)
+            // shrinks a little, then is shortened with "...". Short values are unchanged.
+            let room = |arrows: f32| right - arrows - (EDGE_X + label_w + VALUE_GAP);
             if lit && row.changes {
                 let (l, r) = (quick_caret_face(false), quick_caret_face(true));
+                let max_w = room(r.w as f32 + l.w as f32 + 28.0);
+                let w = fitted_width(c, v, MENU_PX, VALUE_MIN_PX, max_w);
                 let rx = right - r.w as f32;
                 c.blit(&r, rx as u32, (y + 6.0) as u32);
                 let vx = rx - 14.0 - w;
-                c.print(vx, y + MENU_TEXT_DY, v, MENU_PX, ink, true);
+                c.print_fit(
+                    vx,
+                    y + MENU_TEXT_DY,
+                    v,
+                    MENU_PX,
+                    VALUE_MIN_PX,
+                    max_w,
+                    ink,
+                    true,
+                );
                 c.blit(&l, (vx - 14.0 - l.w as f32) as u32, (y + 6.0) as u32);
             } else {
-                c.print(right - w, y + MENU_TEXT_DY, v, MENU_PX, ink, true);
+                let max_w = room(0.0);
+                let w = fitted_width(c, v, MENU_PX, VALUE_MIN_PX, max_w);
+                c.print_fit(
+                    right - w,
+                    y + MENU_TEXT_DY,
+                    v,
+                    MENU_PX,
+                    VALUE_MIN_PX,
+                    max_w,
+                    ink,
+                    true,
+                );
             }
         }
     }
@@ -577,10 +688,10 @@ fn draw_menu(c: &mut Canvas, rows: &[MenuRow], selected: usize, status: &[String
     }
     let mut legend = vec![("B", "Back")];
     if let Some(row) = rows.get(selected).filter(|r| r.selectable) {
-        legend.push(if row.changes {
-            ("A", "Change")
-        } else {
-            ("A", "Open")
+        legend.push(match (row.action, row.changes) {
+            (Some(a), _) => ("A", a),
+            (None, true) => ("A", "Change"),
+            (None, false) => ("A", "Open"),
         });
     }
     c.legend(&legend);
@@ -716,7 +827,7 @@ fn draw_list(
 }
 
 fn draw_keyboard(c: &mut Canvas, k: &KeyboardView) {
-    c.centred(14.0, "Wi-Fi password", 18.0, DIM, true);
+    c.centred(14.0, k.title, 18.0, DIM, true);
     c.centred(42.0, &k.heading, 22.0, MENU_INK, false);
     // The field.
     let (fx, fy, fw, fh) = (
@@ -781,7 +892,7 @@ fn draw_keyboard(c: &mut Canvas, k: &KeyboardView) {
         ("B", "Delete"),
         ("Y", if k.shown { "Hide" } else { "Show" }),
         ("L/R", "Case"),
-        ("START", "Join"),
+        ("START", k.confirm),
     ]);
 }
 
@@ -817,7 +928,7 @@ fn key_cap(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, key: &Key, lit: bool,
                 }
                 Special::Delete => "Del".into(),
                 Special::Cancel => "Cancel".into(),
-                Special::Done => "Join".into(),
+                Special::Done => k.confirm.into(),
             },
             15.0,
             false,
@@ -850,11 +961,13 @@ mod tests {
         kb.type_char('a');
         let views = [
             NetView::Menu {
+                title: "Network",
                 rows: vec![MenuRow::setting("Wi-Fi", "On"), MenuRow::opens("Networks")],
                 selected: 0,
                 status: vec!["Connected to DropBearNet".into(), "192.168.4.37".into()],
             },
             NetView::Menu {
+                title: "Network",
                 rows: vec![
                     MenuRow::setting("Wi-Fi", "On"),
                     MenuRow::opens("Networks"),
@@ -925,6 +1038,7 @@ mod tests {
                 rows.push(MenuRow::opens("Networks"));
             }
             let f = net_face(&NetView::Menu {
+                title: "Network",
                 rows,
                 selected,
                 status: vec![],
@@ -972,6 +1086,7 @@ mod tests {
 
     fn menu(rows: Vec<MenuRow>, status: Vec<String>) -> UndoFace {
         net_face(&NetView::Menu {
+            title: "Network",
             rows,
             selected: 0,
             status,

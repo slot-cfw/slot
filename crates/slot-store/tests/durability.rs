@@ -206,6 +206,7 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
             wifi: false,
             syncthing: false,
             show_titles: false,
+            retroachievements: false,
         }
     );
 }

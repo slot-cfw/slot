@@ -31,7 +31,9 @@ use crate::persist::{self, Snapshot};
 use crate::sleep::{sleep_step, SleepPlan, Verdict, POWER_QUIET_MS};
 use crate::video_mode::{self, VideoMode};
 
+mod achievements;
 mod in_game;
+pub use achievements::{RaInfo, RaRequest};
 pub use in_game::{InGame, MENU_REVEAL_MS};
 
 pub const INSERT_S: f32 = 0.73;
@@ -262,6 +264,8 @@ pub enum Phase {
     About,
     /// The Network menu and its screens (0.5.0).
     Network,
+    /// The RetroAchievements menu and its screens (0.6.0).
+    Achievements,
     Doze {
         cart: Option<String>,
     },
@@ -381,6 +385,22 @@ pub struct App {
     /// The RetroAchievements store, while RetroAchievements is On (0.6.0). `None` (Off)
     /// means no RA thread, file or wait anywhere.
     ra_store: Option<slot_achievements::store::StoreHandle>,
+    /// A store being stopped after RetroAchievements was turned Off: only waited for by
+    /// D5, never given anything new.
+    ra_settling: Option<slot_achievements::store::StoreHandle>,
+    /// The RetroAchievements menu's screens while it is open (0.6.0 Phase 5).
+    ra_menu: Option<crate::ra_menu::RaMenu>,
+    ra_face: Option<TexId>,
+    /// What the session last reported about RetroAchievements.
+    ra_info: RaInfo,
+    /// What the menu asked of the session, taken once a frame.
+    ra_requests: Vec<RaRequest>,
+    /// Unlock notices waiting for the game to be on screen, oldest first.
+    unlock_notices: std::collections::VecDeque<achievements::UnlockNotice>,
+    /// The notice whose face is being built (by the frontend), with its number.
+    notice_wanted: Option<(u64, achievements::UnlockNotice)>,
+    notice_showing: Option<(achievements::UnlockNotice, Millis)>,
+    notices_shown: u64,
     /// The lid as last reported. While it is shut, POWER never wakes the screen.
     lid_shut: bool,
     /// Hardware sleep for the doze under way (software standby when not available).
@@ -465,6 +485,15 @@ impl App {
             net_quiet_asked: 0,
             net_menu: None,
             net_face: None,
+            ra_settling: None,
+            ra_menu: None,
+            ra_face: None,
+            ra_info: RaInfo::default(),
+            ra_requests: Vec::new(),
+            unlock_notices: std::collections::VecDeque::new(),
+            notice_wanted: None,
+            notice_showing: None,
+            notices_shown: 0,
             in_game: None,
             menu_tap: None,
             states_from_menu: false,
@@ -972,6 +1001,7 @@ impl App {
             QuickRow::Sleep => QuickValue::sleep(self.state.sleep_minutes),
             QuickRow::Titles => Some(QuickValue::flag(self.state.show_titles)),
             QuickRow::Network => Some(QuickValue::flag(self.state.wifi)),
+            QuickRow::RetroAchievements => Some(QuickValue::flag(self.state.retroachievements)),
             QuickRow::DateTime
             | QuickRow::About
             | QuickRow::Screen
@@ -1693,14 +1723,27 @@ impl App {
     /// RetroAchievements writes still pending (the ledger first). Nothing pending, RA Off,
     /// low battery and timed shutdown: no wait at all.
     fn settle_achievements(&mut self) {
-        let Some(ra) = &self.ra_store else {
+        if !self.manual_shutdown {
             return;
-        };
-        if !self.manual_shutdown || !ra.pending() {
+        }
+        // The running store, and one still stopping after RetroAchievements was turned
+        // Off: 250 ms at most for both together.
+        let stores: Vec<_> = self
+            .ra_store
+            .iter()
+            .chain(self.ra_settling.iter())
+            .filter(|ra| ra.pending())
+            .collect();
+        if stores.is_empty() {
             return;
         }
         let began = std::time::Instant::now();
-        let done = ra.settle_for_poweroff(slot_achievements::store::POWEROFF_WAIT);
+        let limit = slot_achievements::store::POWEROFF_WAIT;
+        let mut done = true;
+        for ra in stores {
+            let left = limit.saturating_sub(began.elapsed());
+            done &= ra.settle_for_poweroff(left);
+        }
         eprintln!(
             "slot: achievements: waited {} ms for pending writes ({})",
             began.elapsed().as_millis(),
@@ -1875,6 +1918,7 @@ impl App {
             }
             Phase::QuickMenu { row } => self.quick_menu_input(row, action),
             Phase::Network => self.net_menu_input(action),
+            Phase::Achievements => self.ra_menu_input(action),
             _ => {}
         }
     }
@@ -2004,6 +2048,10 @@ impl App {
                 self.net.sync_menu_opened();
                 self.phase = Phase::Network;
             }
+            QuickRow::RetroAchievements => {
+                self.ra_menu = Some(crate::ra_menu::RaMenu::new());
+                self.phase = Phase::Achievements;
+            }
             QuickRow::Screen | QuickRow::Game => {
                 if let Some(row) = row.child() {
                     self.phase = Phase::QuickMenu { row };
@@ -2079,6 +2127,7 @@ impl App {
             | QuickRow::Screen
             | QuickRow::Game
             | QuickRow::Network
+            | QuickRow::RetroAchievements
             | QuickRow::Resume
             | QuickRow::States
             | QuickRow::Settings
@@ -2522,6 +2571,7 @@ impl App {
         if let Some(m) = &mut self.net_menu {
             m.tick(self.net.as_ref(), self.clock as u64);
         }
+        self.unlock_notice_tick();
         self.wifi_tick();
         let offer = self.undo_label();
         if let Some(p) = &mut self.polaroids {
@@ -2821,6 +2871,10 @@ impl App {
             }
             Phase::Network => {
                 draw_about(self.net_face, out);
+                return;
+            }
+            Phase::Achievements => {
+                draw_about(self.ra_face, out);
                 return;
             }
             Phase::Inserting { cart, resumed, .. } => {
@@ -3240,7 +3294,11 @@ impl App {
     pub fn no_game_seated(&self) -> bool {
         matches!(
             self.phase,
-            Phase::Shelf | Phase::QuickMenu { .. } | Phase::About | Phase::Network
+            Phase::Shelf
+                | Phase::QuickMenu { .. }
+                | Phase::About
+                | Phase::Network
+                | Phase::Achievements
         )
     }
 
@@ -3364,6 +3422,7 @@ impl App {
         // stays, to wake on (approved D3).
         self.in_game_before_doze();
         self.net_menu = None;
+        self.ra_menu_before_doze();
         self.state_writer.flush();
         let saved = self.flush_resume() || self.flush_resume();
         let cart = match &mut self.phase {

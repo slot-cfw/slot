@@ -199,6 +199,7 @@ fn settings_in_a_game_is_the_carousel_menu_without_date_and_time() {
             QuickRow::Screen,
             QuickRow::Game,
             QuickRow::Network,
+            QuickRow::RetroAchievements,
             QuickRow::Sleep,
             QuickRow::About
         ]

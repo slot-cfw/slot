@@ -59,6 +59,9 @@ pub struct Frontend {
     about: AboutFace,
     quick_clock: QuickClock,
     net: NetFace,
+    ra: NetFace,
+    /// The unlock notice's face (0.6.0): its texture, and the notice it was built for.
+    notice_tex: Option<TexId>,
 }
 
 /// The Network screen's face and what it was last drawn from (0.5.0).
@@ -154,6 +157,8 @@ impl Frontend {
             about: AboutFace::default(),
             quick_clock: QuickClock::default(),
             net: NetFace::default(),
+            ra: NetFace::default(),
+            notice_tex: None,
         }
     }
 
@@ -383,6 +388,8 @@ impl Frontend {
         sync_clock(self.session.app_mut(), compositor, &mut self.clocks);
         sync_about(self.session.app_mut(), compositor, &mut self.about);
         sync_net(self.session.app_mut(), compositor, &mut self.net);
+        sync_ra(self.session.app_mut(), compositor, &mut self.ra);
+        sync_unlock_notice(self.session.app_mut(), compositor, &mut self.notice_tex);
         sync_quick_clock(self.session.app_mut(), compositor, &mut self.quick_clock);
         sync_core_picker(
             self.session.app_mut(),
@@ -536,6 +543,14 @@ impl Frontend {
         self.session.app()
     }
 
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    pub fn session_mut(&mut self) -> &mut Session {
+        &mut self.session
+    }
+
     pub fn core_settling(&self) -> bool {
         self.session.core_settling()
     }
@@ -584,6 +599,11 @@ impl Frontend {
     }
 
     /// Wi-Fi On (0.5.0): hands the app its network thread.
+    /// slot-net with Wi-Fi On, for RetroAchievements (0.6.0), before the first frame.
+    pub fn set_ra_jobs(&mut self, jobs: slot_net::NetJobs) {
+        self.session.set_ra_jobs(jobs);
+    }
+
     pub fn set_net(&mut self, net: Box<dyn crate::net::Net>) {
         self.session.app_mut().set_net(net);
     }
@@ -842,6 +862,32 @@ fn sync_net(app: &mut App, compositor: &mut Compositor, state: &mut NetFace) {
     let id = upload(compositor, &mut state.tex, face);
     app.set_net_face(id);
     state.shown = Some(view);
+}
+
+/// The RetroAchievements screen's face (0.6.0), drawn like the Network screens.
+fn sync_ra(app: &mut App, compositor: &mut Compositor, state: &mut NetFace) {
+    let Some(view) = app.ra_view() else {
+        state.shown = None;
+        return;
+    };
+    if state.tex.is_some() && state.shown.as_ref() == Some(&view) {
+        return;
+    }
+    let face = slot_ui::net_face(&view);
+    let id = upload(compositor, &mut state.tex, face);
+    app.set_ra_face(id);
+    state.shown = Some(view);
+}
+
+/// The next unlock notice's face, built when the app asks for it (one at a time).
+fn sync_unlock_notice(app: &mut App, compositor: &mut Compositor, tex: &mut Option<TexId>) {
+    let Some((number, notice)) = app.unlock_notice_wanted() else {
+        return;
+    };
+    let face = slot_ui::achievement_toast_face(notice.title.as_deref(), notice.points);
+    let (w, h) = (face.w, face.h);
+    let id = upload_rgba(compositor, tex, w, h, &face.rgba);
+    app.unlock_notice_ready(number, id, w, h);
 }
 
 fn sync_core_picker(

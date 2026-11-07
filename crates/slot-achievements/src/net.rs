@@ -64,21 +64,61 @@ pub trait Link: Send + 'static {
     fn connected(&self) -> bool;
 }
 
-/// What the worker tells the game thread.
+/// Why a Log In did not work, for the Settings screens (Phase 5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoginProblem {
+    /// Wi-Fi is not connected.
+    Offline,
+    /// The clock cannot be trusted yet, so the server's certificate cannot be checked.
+    WaitingForTime,
+    /// No answer, or not the server's answer.
+    Unreachable,
+    /// The server refused the user name and password.
+    WrongPassword,
+    /// The server refused the account, with its reason (for example an unverified email).
+    Refused(String),
+    /// The server does not accept this client.
+    UnsupportedClient,
+    /// The server's answer had no usable user name or token.
+    Unusable,
+}
+
+impl std::fmt::Display for LoginProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoginProblem::Offline => f.write_str("Connect to Wi-Fi to log in"),
+            LoginProblem::WaitingForTime => f.write_str("Waiting for network time"),
+            LoginProblem::Unreachable => f.write_str("Could not reach RetroAchievements"),
+            LoginProblem::WrongPassword => f.write_str("Wrong user name or password"),
+            LoginProblem::Refused(m) => f.write_str(m),
+            LoginProblem::UnsupportedClient => f.write_str("This client is not supported"),
+            LoginProblem::Unusable => f.write_str("The server's answer was not usable"),
+        }
+    }
+}
+
+/// What the worker tells the game thread. Every answer carries the ticket of the request
+/// it answers, so the game thread can drop one that belongs to an earlier game, Log In or
+/// Log Out (Phase 5, stale answers).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     /// A game launched with no cached definitions has them now: track it from here
     /// (a first online launch, architecture 10.3).
     GameReady {
+        ticket: u64,
         rom_hash: String,
         account: String,
         game: GameData,
         unlocked: Vec<u32>,
     },
     LoggedIn {
+        ticket: u64,
         user: String,
     },
-    LoginFailed(String),
+    LoginFailed {
+        ticket: u64,
+        problem: LoginProblem,
+    },
 }
 
 /// For the Settings status line (Phase 5).
@@ -98,11 +138,13 @@ enum Cmd {
     Game {
         rom_hash: String,
         have_cache: bool,
+        ticket: u64,
     },
     LogIn {
         user: String,
         password: String,
         gen: u64,
+        ticket: u64,
     },
     LogOut {
         gen: u64,
@@ -135,21 +177,25 @@ impl WorkerHandle {
 
     /// A game started: fetch its definitions and the account's unlocks. With a cache the
     /// game already tracks from it, and a changed set is only cached (applied at the next
-    /// launch, D12); without one the fetched set is sent back as [`Event::GameReady`].
-    pub fn game(&self, rom_hash: &str, have_cache: bool) {
+    /// launch, D12); without one the fetched set is sent back as [`Event::GameReady`],
+    /// with `ticket`.
+    pub fn game(&self, rom_hash: &str, have_cache: bool, ticket: u64) {
         let _ = self.tx.send(Cmd::Game {
             rom_hash: rom_hash.to_string(),
             have_cache,
+            ticket,
         });
     }
 
-    /// Log In with a password: sent once over TLS, never kept.
-    pub fn log_in(&self, user: &str, password: String) {
+    /// Log In with a password: sent once over TLS, never kept. The answer carries
+    /// `ticket`.
+    pub fn log_in(&self, user: &str, password: String, ticket: u64) {
         let gen = self.requested.fetch_add(1, Ordering::SeqCst) + 1;
         let _ = self.tx.send(Cmd::LogIn {
             user: user.to_string(),
             password,
             gen,
+            ticket,
         });
     }
 
@@ -247,8 +293,9 @@ struct State {
     pause: Option<Pause>,
     retry_at: Option<Instant>,
     step: Duration,
-    /// Games whose definitions are to be fetched: (ROM hash, whether a cache exists).
-    games: Vec<(String, bool)>,
+    /// Games whose definitions are to be fetched: (ROM hash, whether a cache exists, the
+    /// ticket of the latest request for it).
+    games: Vec<(String, bool, u64)>,
     connected_at: Option<Instant>,
     /// Some unlocks wait for this connection's network time.
     time_waiting: bool,
@@ -333,20 +380,22 @@ impl State {
             Cmd::Game {
                 rom_hash,
                 have_cache,
-            } => {
-                if !self.games.iter().any(|(h, _)| *h == rom_hash) {
-                    self.games.push((rom_hash, have_cache));
-                }
-            }
+                ticket,
+            } => match self.games.iter_mut().find(|(h, ..)| *h == rom_hash) {
+                // The same game seated again: one fetch, answered for the latest seating.
+                Some(g) => *g = (rom_hash, have_cache, ticket),
+                None => self.games.push((rom_hash, have_cache, ticket)),
+            },
             Cmd::LogIn {
                 user,
                 password,
                 gen,
+                ticket,
             } => {
                 // A later Log In, Log Out or Stop still queued makes this one's request
                 // refused, so a cancelled password is never sent.
                 self.applied = self.applied.max(gen);
-                self.log_in(&user, password)
+                self.log_in(&user, password, ticket)
             }
             Cmd::LogOut { gen } => {
                 self.applied = self.applied.max(gen);
@@ -431,49 +480,51 @@ impl State {
         self.pause = Some(p);
     }
 
-    fn log_in(&mut self, user: &str, password: String) {
+    fn log_in(&mut self, user: &str, password: String, ticket: u64) {
         let call = api::login_password(user, &password);
         wipe(password);
         let reply = match call {
             Ok(call) => self.send(&call),
             Err(e) => Err(e),
         };
-        let event = match reply {
-            Err(e) if e == OFFLINE => Event::LoginFailed("Connect to Wi-Fi to log in".into()),
-            Err(e) if e == HOLD => Event::LoginFailed("Waiting for network time".into()),
+        let problem = match reply {
+            Err(e) if e == OFFLINE => LoginProblem::Offline,
+            Err(e) if e == HOLD => LoginProblem::WaitingForTime,
             // Cancelled by a later Log In, Log Out or Stop: nothing to report.
             Err(e) if e == INTERRUPTED => return,
-            Err(_) => Event::LoginFailed("Could not reach RetroAchievements".into()),
+            Err(_) => LoginProblem::Unreachable,
             Ok(reply) => {
                 let answer = api::parse_login(&reply);
                 match (api::classify(&answer.verdict), answer.user, answer.token) {
                     (Outcome::Ok, Some(u), Some(t)) => match Account::new(&u, &t) {
                         Some(account) => {
-                            eprintln!("slot: achievements: logged in as {u}");
+                            eprintln!("slot: achievements: logged in");
                             self.store.log_in(account);
                             self.renewed = true;
                             self.pause = None;
                             self.retry_at = None;
-                            Event::LoggedIn { user: u }
+                            let _ = self.events.send(Event::LoggedIn { ticket, user: u });
+                            return;
                         }
-                        None => Event::LoginFailed("The server's answer was not usable".into()),
+                        None => LoginProblem::Unusable,
                     },
-                    (Outcome::Pause(Pause::Login), _, _) => Event::LoginFailed(
-                        answer
-                            .verdict
-                            .message
-                            .unwrap_or_else(|| "Wrong user name or password".into()),
-                    ),
-                    (Outcome::Pause(Pause::Access(m)), _, _) => Event::LoginFailed(m),
-                    (Outcome::Pause(Pause::UnsupportedClient), _, _) => {
-                        Event::LoginFailed("This client is not supported".into())
+                    (Outcome::Pause(Pause::Login), _, _) => {
+                        if let Some(m) = &answer.verdict.message {
+                            eprintln!("slot: achievements: login refused: {m}");
+                        }
+                        LoginProblem::WrongPassword
                     }
-                    (Outcome::Refused(m), _, _) => Event::LoginFailed(m),
-                    _ => Event::LoginFailed("Could not reach RetroAchievements".into()),
+                    (Outcome::Pause(Pause::Access(m)), _, _) => LoginProblem::Refused(m),
+                    (Outcome::Pause(Pause::UnsupportedClient), _, _) => {
+                        LoginProblem::UnsupportedClient
+                    }
+                    (Outcome::Refused(m), _, _) => LoginProblem::Refused(m),
+                    _ => LoginProblem::Unreachable,
                 }
             }
         };
-        let _ = self.events.send(event);
+        eprintln!("slot: achievements: login failed: {problem}");
+        let _ = self.events.send(Event::LoginFailed { ticket, problem });
     }
 
     /// Everything that can be sent now, in order: token renewal, definitions, unlocks.
@@ -494,8 +545,8 @@ impl State {
         }
         // Renewal may have corrected the spelling or the token.
         let account = self.store.account().unwrap_or(account);
-        while let Some((hash, have_cache)) = self.games.first().cloned() {
-            if !self.fetch_game(&account, &hash, have_cache) {
+        while let Some((hash, have_cache, ticket)) = self.games.first().cloned() {
+            if !self.fetch_game(&account, &hash, have_cache, ticket) {
                 // Kept for later, behind any other game waiting, so one failing game never
                 // holds the others back; unlocks are still sent (a failing definitions
                 // request never holds them back either).
@@ -552,7 +603,7 @@ impl State {
     }
 
     /// Definitions, then the account's unlocks. Returns false to stop for now.
-    fn fetch_game(&mut self, account: &Account, hash: &str, have_cache: bool) -> bool {
+    fn fetch_game(&mut self, account: &Account, hash: &str, have_cache: bool, ticket: u64) -> bool {
         let Ok(call) = api::game_sets(&account.user, &account.token, hash) else {
             return true;
         };
@@ -631,6 +682,7 @@ impl State {
                 game.achievements.len()
             );
             let _ = self.events.send(Event::GameReady {
+                ticket,
                 rom_hash: hash.to_string(),
                 account: account.key(),
                 game,

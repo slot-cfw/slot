@@ -141,9 +141,11 @@ fn a_first_online_launch_fetches_the_set_tracks_it_and_sends_an_unlock_over_http
     let wifi = Wifi(Arc::new(AtomicBool::new(true)));
     let mut ra = Ra::start(card.path(), true, transport(&server), wifi.clone()).unwrap();
 
-    ra.worker().log_in("dean", "pw".into());
+    ra.log_in("dean", "pw".into());
     wait("logged in", || {
-        ra.poll().iter().any(|u| matches!(u, RaUpdate::LoggedIn(_)))
+        ra.poll()
+            .iter()
+            .any(|u| matches!(u, RaUpdate::LoggedIn { .. }))
     });
     let (path, hash) = rom(card.path(), 1);
     world.lock().unwrap().game = Some(fake::game_sets(

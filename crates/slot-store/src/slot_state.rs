@@ -54,6 +54,9 @@ pub struct SlotState {
     pub syncthing: bool,
     /// Game titles above the carts on the carousel.
     pub show_titles: bool,
+    /// RetroAchievements (0.6.0): Off by default. Nothing RetroAchievements does runs
+    /// while Off.
+    pub retroachievements: bool,
 }
 
 /// The carousel's categories: the library itself (All), then Recents and Favourites.
@@ -156,6 +159,7 @@ impl Default for SlotState {
             wifi: false,
             syncthing: false,
             show_titles: false,
+            retroachievements: false,
         }
     }
 }
@@ -174,7 +178,7 @@ pub fn read_slot_state(root: &Path) -> SlotState {
 
 pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
     let text = format!(
-        "cart={}\ncart_platform={}\nbrightness={}\nblue_light={}\nvolume={}\nvolume_hp={}\nmuted={}\nmuted_hp={}\nclock_set={}\nutc_offset_min={}\nrumble={}\nff_speed={}\nff_sound={}\ncolour_correction={}\nshader_gba={}\nshader_gb={}\neject_save={}\nturbo={}\nrewind={}\ngb_palettes={}\ngb_palette={}\nlast_category={}\nsleep_minutes={}\nwifi={}\nsyncthing={}\nshow_titles={}\n",
+        "cart={}\ncart_platform={}\nbrightness={}\nblue_light={}\nvolume={}\nvolume_hp={}\nmuted={}\nmuted_hp={}\nclock_set={}\nutc_offset_min={}\nrumble={}\nff_speed={}\nff_sound={}\ncolour_correction={}\nshader_gba={}\nshader_gb={}\neject_save={}\nturbo={}\nrewind={}\ngb_palettes={}\ngb_palette={}\nlast_category={}\nsleep_minutes={}\nwifi={}\nsyncthing={}\nshow_titles={}\nretroachievements={}\n",
         s.cart.as_deref().unwrap_or(""),
         s.cart_platform.map_or(String::new(), platform_key),
         s.brightness,
@@ -200,7 +204,8 @@ pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
         s.sleep_minutes,
         if s.wifi { "on" } else { "off" },
         if s.syncthing { "on" } else { "off" },
-        s.show_titles as u8
+        s.show_titles as u8,
+        if s.retroachievements { "on" } else { "off" }
     );
     atomic_write(&state_path(root), text.as_bytes())
 }
@@ -232,6 +237,7 @@ fn parse(text: &str) -> Option<SlotState> {
     let mut wifi = None;
     let mut syncthing = None;
     let mut show_titles = None;
+    let mut retroachievements = None;
     for line in text.lines().filter(|l| !l.is_empty()) {
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -268,6 +274,7 @@ fn parse(text: &str) -> Option<SlotState> {
             "wifi" => wifi = on_off(value),
             "syncthing" => syncthing = on_off(value),
             "show_titles" => show_titles = flag(value),
+            "retroachievements" => retroachievements = on_off(value),
             "shader_gb" => shader_gb = Shader::parse(value).filter(|s| Shader::GB.contains(s)),
             _ => {}
         }
@@ -301,6 +308,7 @@ fn parse(text: &str) -> Option<SlotState> {
         wifi: wifi.unwrap_or(fallback.wifi),
         syncthing: syncthing.unwrap_or(fallback.syncthing),
         show_titles: show_titles.unwrap_or(fallback.show_titles),
+        retroachievements: retroachievements.unwrap_or(fallback.retroachievements),
     })
 }
 

@@ -205,6 +205,85 @@ pub fn toast_face(toast: Toast) -> CartFace {
     haloed(&cov, s.w, s.h + detail_h(toast), HUD_INK)
 }
 
+/// RetroAchievements' unlock notice (0.6.0, D7): the existing toast's look on one line in
+/// the top bar, in a wider box, shown a little longer than other toasts.
+pub const ACHIEVEMENT_W: u32 = 640;
+pub const ACHIEVEMENT_MS: u64 = 3000;
+
+/// "(1 point)", "(25 points)".
+fn points_text(points: u32) -> String {
+    match points {
+        1 => "(1 point)".into(),
+        n => format!("({n} points)"),
+    }
+}
+
+/// The notice's one line, in the toast's capitals and size. A title too long for the box
+/// at the smallest size is shortened with "...", and the points are always kept.
+pub fn achievement_layout(title: Option<&str>, points: Option<u32>) -> text::Layout {
+    let Some(font) = text::label_font() else {
+        return text::Layout {
+            lines: Vec::new(),
+            px: TOAST_PX,
+            tracking: 0.0,
+        };
+    };
+    let tail = points.map(points_text);
+    let line = |title: &str| {
+        let mut s = String::from("Achievement unlocked");
+        if !title.is_empty() {
+            s.push_str(": ");
+            s.push_str(title);
+        }
+        if let Some(t) = &tail {
+            s.push(' ');
+            s.push_str(t);
+        }
+        s.to_uppercase()
+    };
+    let title: String = title
+        .unwrap_or("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let max_w = ACHIEVEMENT_W as f32;
+    let mut px = TOAST_PX;
+    while px >= TOAST_MIN_PX {
+        let tracking = text::tracking_for(px);
+        let full = line(&title);
+        if text::line_width(font, &full, px, tracking) <= max_w {
+            return text::Layout {
+                lines: vec![full],
+                px,
+                tracking,
+            };
+        }
+        px -= 1.0;
+    }
+    let px = TOAST_MIN_PX;
+    let tracking = text::tracking_for(px);
+    let mut cut: Vec<char> = title.chars().collect();
+    loop {
+        let shown: String = cut.iter().collect();
+        let candidate = line(&format!("{}...", shown.trim_end()));
+        if cut.is_empty() || text::line_width(font, &candidate, px, tracking) <= max_w {
+            return text::Layout {
+                lines: vec![candidate],
+                px,
+                tracking,
+            };
+        }
+        cut.pop();
+    }
+}
+
+/// The unlock notice's face, in the toast's ink and halo.
+pub fn achievement_toast_face(title: Option<&str>, points: Option<u32>) -> CartFace {
+    let layout = achievement_layout(title, points);
+    let cov = text::coverage(ACHIEVEMENT_W, TOAST_H, &layout);
+    haloed(&cov, ACHIEVEMENT_W, TOAST_H, HUD_INK)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

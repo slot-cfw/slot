@@ -30,6 +30,7 @@ pub mod net;
 pub mod net_menu;
 pub mod persist;
 pub mod ra;
+pub mod ra_menu;
 pub mod resample;
 pub mod rewind;
 pub mod root;
