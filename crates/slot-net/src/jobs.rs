@@ -167,7 +167,8 @@ type OnTime = Arc<dyn Fn(TimeEvent) + Send + Sync>;
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum TimeEvent {
     /// Network time answered: the system clock was `offset_s` behind it (negative: ahead).
-    Measured { offset_s: f64 },
+    /// The query took `took` (the replies came at some moment within it).
+    Measured { offset_s: f64, took: Duration },
     /// The system clock was stepped to network time; `rtc_written` if the RTC followed.
     Stepped { rtc_written: bool },
 }
@@ -786,12 +787,15 @@ impl Worker {
                     o.replies,
                     began.elapsed().as_secs_f64()
                 );
+                // Told before the offer is published, so a step (which needs the offer)
+                // can never be heard first.
+                self.shared.tell_time(TimeEvent::Measured {
+                    offset_s: o.offset_s,
+                    took: began.elapsed(),
+                });
                 if let Ok(mut slot) = self.shared.offer.lock() {
                     *slot = Some(o);
                 }
-                self.shared.tell_time(TimeEvent::Measured {
-                    offset_s: o.offset_s,
-                });
             }
             None if token.is_cancelled() => {}
             None => eprintln!("slot: time: no reply from the router or pool.ntp.org"),
@@ -1292,10 +1296,10 @@ mod tests {
     #[test]
     fn the_time_hook_hears_each_measurement_and_step_and_changes_nothing() {
         let (jobs, seen, _d) = timed_rig("+36.35", ok_step, written_rtc);
-        assert_eq!(
-            *seen.lock().unwrap(),
-            vec![TimeEvent::Measured { offset_s: 36.35 }]
-        );
+        assert!(matches!(
+            seen.lock().unwrap()[..],
+            [TimeEvent::Measured { offset_s, .. }] if offset_s == 36.35
+        ));
         assert!(!jobs.clock_done(), "the hook does not apply anything");
         jobs.idle_moment();
         assert_eq!(
@@ -1318,9 +1322,11 @@ mod tests {
         assert_eq!(seen.lock().unwrap().len(), 1, "the clock did not move");
         let (jobs, seen, _d) = timed_rig("-0.44", no_step, no_rtc);
         jobs.idle_moment();
-        assert_eq!(
-            *seen.lock().unwrap(),
-            vec![TimeEvent::Measured { offset_s: -0.44 }],
+        assert!(
+            matches!(
+                seen.lock().unwrap()[..],
+                [TimeEvent::Measured { offset_s, .. }] if offset_s == -0.44
+            ),
             "close enough: measured, never stepped"
         );
         drop(jobs);

@@ -31,6 +31,9 @@ pub const BOOTS_KEPT: usize = 30;
 /// A measurement within this of network time (ms) needs no step, so it vouches for the RTC.
 pub const CLOSE_MS: i64 = 1000;
 
+/// Offsets beyond this (about 100 years, in ms) are nonsense and never used.
+pub const OFFSET_LIMIT_MS: i64 = 3_200_000_000_000;
+
 pub const HEADER: &str = "slot.advance retroachievements clock 1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,8 +114,9 @@ pub struct Anchor {
 /// What happened to the clock.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ClockEvent {
-    /// slot-net measured network time: the system clock was `offset_ms` behind it.
-    Measured { offset_ms: i64 },
+    /// slot-net measured network time: the system clock was `offset_ms` behind it. The
+    /// query took `took_ms`; the replies came at some moment within it.
+    Measured { offset_ms: i64, took_ms: u64 },
     /// slot-net stepped the system clock to network time, and wrote the RTC if
     /// `rtc_written`.
     Stepped { rtc_written: bool },
@@ -207,21 +211,40 @@ impl History {
     /// Records a clock event stamped `now` (taken just after it happened).
     pub fn record(&mut self, event: ClockEvent, now: &Stamp) {
         match event {
-            ClockEvent::Measured { offset_ms } => {
-                let boot = self.current(now);
-                let first = boot.segments.len() == 1;
-                let seg = boot.segments.last_mut().expect("a boot has a segment");
-                if !first && seg.start_ms == now.boot_ms {
-                    // Taken in the very millisecond of a break: it may belong before it.
+            ClockEvent::Measured { offset_ms, took_ms } => {
+                if offset_ms.unsigned_abs() > OFFSET_LIMIT_MS as u64 {
                     return;
                 }
+                // Filed by when it was taken, not by when it arrived: a step or manual
+                // change on another thread may have been recorded first.
+                let began = now.boot_ms.saturating_sub(took_ms);
+                let boot = self.current(now);
+                let n = boot.segments.len();
+                if boot
+                    .segments
+                    .iter()
+                    .skip(1)
+                    .any(|s| s.start_ms >= began && s.start_ms <= now.boot_ms)
+                {
+                    // The clock broke while the query ran (or in its last millisecond):
+                    // the replies may describe either side, so they describe neither.
+                    return;
+                }
+                let Some(i) = boot
+                    .segments
+                    .iter()
+                    .rposition(|s| s.start_ms <= now.boot_ms)
+                else {
+                    return;
+                };
+                let seg = &mut boot.segments[i];
                 seg.measurements.push(Measurement {
                     at_ms: now.boot_ms,
                     offset_ms,
                 });
-                if offset_ms.abs() <= CLOSE_MS {
-                    // No step needed: the clock, set from the RTC at boot, agrees with
-                    // network time.
+                if i == n - 1 && seg.why == SegStart::Boot && offset_ms.abs() <= CLOSE_MS {
+                    // No step needed: the clock, untouched since it was set from the RTC
+                    // at boot, agrees with network time.
                     self.set_anchor(now);
                 }
             }
@@ -249,12 +272,38 @@ impl History {
         });
     }
 
-    /// Whether the anchor holds for a clock reading taken `at`: one is set, nothing has
-    /// cleared it since, and the clock does not read earlier than when it was set.
+    /// Whether the anchor held for a clock reading taken `at` (which may be a moment in
+    /// the past: the store can process an unlock after later clock events). It held if it
+    /// was set before `at`, nothing has cleared it since (a manual change or RA starting
+    /// part-way clears it at once), no manual change or unwatched start lies between it
+    /// and `at`, and the clock did not read earlier than when it was set.
     pub fn anchored(&self, at: &Stamp) -> bool {
-        self.anchor
-            .as_ref()
-            .is_some_and(|a| at.wall_ms >= a.wall_ms)
+        let Some(a) = &self.anchor else {
+            return false;
+        };
+        if at.wall_ms < a.wall_ms {
+            return false;
+        }
+        let breaks = |b: &Boot, from: u64| {
+            b.segments.iter().skip(1).any(|s| {
+                matches!(s.why, SegStart::Manual | SegStart::Watch)
+                    && s.start_ms > from
+                    && s.start_ms <= at.boot_ms
+            })
+        };
+        let Some(at_boot) = self.boots.iter().position(|b| b.id == at.boot_id) else {
+            return false;
+        };
+        if a.boot_id == at.boot_id {
+            a.boot_ms <= at.boot_ms && !breaks(&self.boots[at_boot], a.boot_ms)
+        } else {
+            // Set in an earlier boot (or one since pruned), never a later one.
+            let earlier = match self.boots.iter().position(|b| b.id == a.boot_id) {
+                Some(i) => i < at_boot,
+                None => true,
+            };
+            earlier && !breaks(&self.boots[at_boot], 0)
+        }
     }
 
     /// The true time (network time, ms) of a reading taken in an earlier boot, if it can be
@@ -265,7 +314,7 @@ impl History {
             .and_then(|b| b.segment_at(u.at.boot_ms))
         {
             if let Some(m) = nearest(&seg.measurements, u.at.boot_ms) {
-                return Some(u.at.wall_ms + m.offset_ms);
+                return Some(u.at.wall_ms.saturating_add(m.offset_ms));
             }
             if seg.why == SegStart::Step {
                 // The clock was set from network time when this segment began.
@@ -282,7 +331,7 @@ impl History {
             .and_then(|b| b.segments.last())
             .ok_or(Offset::Unknown("this boot is not recorded"))?;
         if let Some(m) = seg.measurements.last() {
-            return Ok(now.wall_ms + m.offset_ms);
+            return Ok(now.wall_ms.saturating_add(m.offset_ms));
         }
         if seg.why == SegStart::Step {
             return Ok(now.wall_ms);
@@ -310,7 +359,7 @@ impl History {
             return Offset::Unknown("the unlock time cannot be traced to network time");
         };
         match self.true_now(now, network_failed) {
-            Ok(true_now) => Offset::Seconds(clamp((true_now - then).div_euclid(1000))),
+            Ok(true_now) => Offset::Seconds(clamp(true_now.saturating_sub(then).div_euclid(1000))),
             Err(e) => e,
         }
     }
@@ -406,9 +455,28 @@ impl History {
                 bad += 1;
             }
         }
-        // A boot whose segments did not read is unusable: drop it (its unlocks then have
-        // no history, which only ever means "no offset").
-        h.boots.retain(|b| !b.segments.is_empty());
+        // Every boot must make sense on its own: segments in order, measurements inside
+        // their segment, offsets in range. Anything else counts as damage (the caller
+        // then trusts none of the file).
+        for b in &h.boots {
+            let ok = !b.segments.is_empty()
+                && b.segments
+                    .windows(2)
+                    .all(|w| w[0].start_ms <= w[1].start_ms)
+                && b.segments.iter().enumerate().all(|(i, s)| {
+                    let end = b.segments.get(i + 1).map_or(u64::MAX, |n| n.start_ms);
+                    s.measurements.iter().all(|m| {
+                        // A measurement may share the millisecond a later segment began
+                        // in (it was recorded first); never one before its own.
+                        m.at_ms >= s.start_ms
+                            && m.at_ms <= end
+                            && m.offset_ms.unsigned_abs() <= OFFSET_LIMIT_MS as u64
+                    })
+                });
+            if !ok {
+                bad += 1;
+            }
+        }
         (h, bad)
     }
 }

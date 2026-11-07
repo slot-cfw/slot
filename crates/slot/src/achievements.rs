@@ -21,7 +21,6 @@
 //! publishes another. That is the contract of [`Evaluator::apply_map`].
 
 use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant};
 
 use slot_achievements::store::time::{self, Stamp};
 use slot_achievements::store::UnlockSink;
@@ -45,6 +44,12 @@ pub trait RaSink: Send {
     /// Takes the event, or hands an unlock back when it cannot take it now (the RA store's
     /// queue is full); it is then kept and offered again on the next frame.
     fn offer(&self, event: RaEvent) -> Result<(), RaEvent>;
+
+    /// At stop (not a frame): takes the event past any bound, so nothing is left behind.
+    /// `Err` only if the receiver has gone.
+    fn hand_over(&self, event: RaEvent) -> Result<(), RaEvent> {
+        self.offer(event)
+    }
 }
 
 impl RaSink for Sender<RaEvent> {
@@ -64,6 +69,15 @@ impl RaSink for UnlockSink {
             RaEvent::Disabled(_) | RaEvent::Unparsed(..) => Ok(()),
         }
     }
+
+    fn hand_over(&self, event: RaEvent) -> Result<(), RaEvent> {
+        match event {
+            RaEvent::Unlocked { id, at } => {
+                UnlockSink::hand_over(self, id, at).map_err(|at| RaEvent::Unlocked { id, at })
+            }
+            RaEvent::Disabled(_) | RaEvent::Unparsed(..) => Ok(()),
+        }
+    }
 }
 
 /// Turns tracking on for the seated game.
@@ -71,9 +85,6 @@ pub struct AchievementPlan {
     pub set: GameSet,
     pub events: Box<dyn RaSink>,
 }
-
-/// How long stopping may spend handing over unlocks the store has not taken yet.
-const STOP_HANDOVER: Duration = Duration::from_millis(100);
 
 struct Tracker {
     eval: Evaluator,
@@ -107,6 +118,11 @@ impl Tracker {
     }
 
     fn deliver(&mut self, event: RaEvent) {
+        if !self.backlog.is_empty() {
+            // Behind those already waiting, so the order is kept.
+            self.backlog.push(event);
+            return;
+        }
         if let Err(back) = self.events.offer(event) {
             self.backlog.push(back);
         }
@@ -264,17 +280,12 @@ impl Achievements {
     /// unloaded, so no pointer into its memory outlives it.
     pub(crate) fn stop(&mut self) {
         if let Some(mut t) = self.tracker.take() {
-            // Unlocks the store has not taken yet are handed over now (bounded; this is
-            // not a frame). They keep the time they were earned.
-            let deadline = Instant::now() + STOP_HANDOVER;
-            while !t.backlog.is_empty() && Instant::now() < deadline {
-                t.retry_backlog();
-                if !t.backlog.is_empty() {
-                    std::thread::sleep(Duration::from_millis(2));
+            // Unlocks the store has not taken yet are handed over past the queue bound:
+            // no wait, nothing dropped. They keep the time they were earned.
+            for e in t.backlog.drain(..) {
+                if let Err(e) = t.events.hand_over(e) {
+                    eprintln!("slot: achievements: LOST {e:?}: the RA store has stopped");
                 }
-            }
-            for e in &t.backlog {
-                eprintln!("slot: achievements: LOST {e:?}: the RA store did not take it in time");
             }
             self.parked = t.map;
         }
@@ -289,8 +300,9 @@ pub fn clock_listener(
     use slot_achievements::store::clock::ClockEvent;
     move |event| {
         let event = match event {
-            slot_net::TimeEvent::Measured { offset_s } => ClockEvent::Measured {
+            slot_net::TimeEvent::Measured { offset_s, took } => ClockEvent::Measured {
                 offset_ms: (offset_s * 1000.0).round() as i64,
+                took_ms: took.as_millis() as u64,
             },
             slot_net::TimeEvent::Stepped { rtc_written } => ClockEvent::Stepped { rtc_written },
         };

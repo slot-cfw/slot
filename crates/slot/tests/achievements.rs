@@ -488,6 +488,12 @@ impl RaSink for Refusing {
         let _ = self.tx.send(event);
         Ok(())
     }
+
+    /// As the RA store does at stop: past the bound.
+    fn hand_over(&self, event: RaEvent) -> Result<(), RaEvent> {
+        let _ = self.tx.send(event);
+        Ok(())
+    }
 }
 
 #[test]
@@ -558,15 +564,15 @@ fn stopping_hands_over_unlocks_still_waiting() {
     r.set(6);
     r.run(5);
     assert!(refused.load(Ordering::SeqCst) >= 1);
-    let f = full.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(20));
-        f.store(false, Ordering::SeqCst);
-    });
+    // Still full: stopping hands it over past the bound, at once.
     r.emu.set_achievements(None);
     assert!(
         wait_for(|| unlocks(&rx) == vec![31], 2),
         "handed over at stop"
+    );
+    assert!(
+        full.load(Ordering::SeqCst),
+        "while the queue was still full"
     );
 }
 

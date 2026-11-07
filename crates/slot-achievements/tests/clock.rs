@@ -23,7 +23,10 @@ struct Sim {
     boot_id: Arc<str>,
     boot_ms: u64,
     true_ms: i64,
+    /// The system clock's error.
     err_ms: i64,
+    /// The RTC's error: the system clock starts from it at each boot.
+    rtc_err_ms: i64,
 }
 
 #[derive(Clone)]
@@ -42,6 +45,7 @@ impl Sim {
             boot_ms: 0,
             true_ms: 1_794_000_000_000,
             err_ms,
+            rtc_err_ms: err_ms,
         };
         s.boot();
         s
@@ -62,6 +66,7 @@ impl Sim {
     }
 
     fn boot(&mut self) {
+        self.err_ms = self.rtc_err_ms;
         self.boots += 1;
         self.boot_id = format!("boot-{}", self.boots).into();
         self.boot_ms = 1500;
@@ -85,6 +90,7 @@ impl Sim {
         self.h.record(
             ClockEvent::Measured {
                 offset_ms: -self.err_ms,
+                took_ms: 0,
             },
             &now,
         );
@@ -92,12 +98,17 @@ impl Sim {
 
     fn step(&mut self, rtc_written: bool) {
         self.err_ms = 0;
+        if rtc_written {
+            self.rtc_err_ms = 0;
+        }
         let now = self.stamp();
         self.h.record(ClockEvent::Stepped { rtc_written }, &now);
     }
 
     fn manual(&mut self, err_ms: i64) {
+        // Date & Time writes the RTC too.
         self.err_ms = err_ms;
+        self.rtc_err_ms = err_ms;
         let now = self.stamp();
         self.h.record(ClockEvent::Manual, &now);
     }
@@ -130,7 +141,7 @@ impl Sim {
     /// Survives a write and read back of clock.txt.
     fn reload(&mut self) {
         let (h, bad) = History::from_records(&self.h.records());
-        assert_eq!(bad, 0);
+        assert_eq!(bad, 0, "{:#?}", self.h.records());
         assert_eq!(h, self.h);
         self.h = h;
     }
@@ -214,7 +225,7 @@ fn a_clock_earlier_than_the_anchor_is_not_trusted() {
     let mut s = Sim::new(0);
     s.measure();
     s.restart_after(HOUR);
-    s.err_ms = -400 * DAY;
+    s.rtc_err_ms = -400 * DAY;
     s.restart_after(0);
     let e = s.unlock();
     assert!(!e.time.anchored, "the clock reads earlier than the anchor");
@@ -484,7 +495,7 @@ fn every_offset_is_within_0_and_14_days_and_correct_when_known() {
         let mut s = Sim::new((next(7200) as i64 - 3600) * S);
         let mut earned: Vec<Earned> = Vec::new();
         for _ in 0..40 {
-            match next(9) {
+            match next(10) {
                 0 => s.run(next(3 * HOUR as u64) as i64),
                 1 => s.sleep(next(20 * DAY as u64) as i64),
                 2 => s.restart_after(next(5 * DAY as u64) as i64),
@@ -497,8 +508,60 @@ fn every_offset_is_within_0_and_14_days_and_correct_when_known() {
                     }
                 }
                 6 => s.reload(),
+                7 => {
+                    // A measurement whose delivery is delayed past later events (another
+                    // thread), and whose query may span them.
+                    let at = s.stamp();
+                    let offset = -s.err_ms;
+                    let took = next(5000);
+                    let later = next(3);
+                    if later == 1 && s.err_ms.abs() > CLOSE_MS {
+                        s.run(1 + next(400) as i64);
+                        s.step(next(2) == 0);
+                    } else if later == 2 {
+                        s.run(1 + next(400) as i64);
+                        s.manual((next(4 * DAY as u64) as i64) - 2 * DAY);
+                    }
+                    // The query is valid only if nothing broke within it; the code must
+                    // drop it otherwise, which this checks below through the offsets.
+                    let spans_break =
+                        s.h.boots
+                            .last()
+                            .unwrap()
+                            .segments
+                            .iter()
+                            .skip(1)
+                            .any(|g| g.start_ms + took >= at.boot_ms && g.start_ms <= at.boot_ms);
+                    let _ = spans_break;
+                    s.h.record(
+                        ClockEvent::Measured {
+                            offset_ms: offset,
+                            took_ms: took,
+                        },
+                        &at,
+                    );
+                }
                 _ => {
-                    earned.push(s.unlock());
+                    // The store may process the unlock after later events: the anchor is
+                    // judged for the moment it was stamped.
+                    let at = s.stamp();
+                    let true_ms = s.true_ms;
+                    if next(3) == 0 {
+                        s.run(1 + next(400) as i64);
+                        if next(2) == 0 {
+                            s.measure();
+                            if s.err_ms.abs() > CLOSE_MS {
+                                s.step(true);
+                            }
+                        } else {
+                            s.manual((next(4 * DAY as u64) as i64) - 2 * DAY);
+                        }
+                    }
+                    let anchored = s.h.anchored(&at);
+                    earned.push(Earned {
+                        time: UnlockTime { at, anchored },
+                        true_ms,
+                    });
                 }
             }
             for e in &earned {
@@ -530,4 +593,184 @@ fn every_offset_is_within_0_and_14_days_and_correct_when_known() {
         checked > 1000,
         "the walk sent too few offsets to mean much: {checked}"
     );
+}
+
+// ---- Races between threads (review B1, S4) ----
+
+#[test]
+fn a_measurement_heard_after_the_step_it_caused_is_filed_before_it() {
+    // slot-net's thread measured; the game thread stepped; the store heard the step first.
+    let mut s = Sim::new(5 * HOUR);
+    let e = s.unlock();
+    s.run(MIN);
+    let measured_at = s.stamp();
+    let offset = -s.err_ms;
+    s.run(200);
+    s.step(true);
+    s.run(MIN);
+    s.h.record(
+        ClockEvent::Measured {
+            offset_ms: offset,
+            took_ms: 3000,
+        },
+        &measured_at,
+    );
+    let segs = &s.h.boots.last().unwrap().segments;
+    assert_eq!(
+        segs[0].measurements.len(),
+        1,
+        "filed in the segment it was taken in"
+    );
+    assert!(
+        segs[1].measurements.is_empty(),
+        "never in the step's segment"
+    );
+    // Next boot: the unlock is corrected by it, and true now is not 5 hours out.
+    assert_eq!(send_next_boot(&mut s, &e), s.truth(&e));
+}
+
+#[test]
+fn a_query_that_spanned_a_manual_change_is_dropped() {
+    // The player set the clock while network time was being asked: the replies may have
+    // been measured against either clock.
+    let mut s = Sim::new(0);
+    let began = s.stamp();
+    s.run(2 * S);
+    s.manual(3 * HOUR);
+    s.run(2 * S);
+    let ended = s.stamp();
+    let took = ended.boot_ms - began.boot_ms;
+    s.h.record(
+        ClockEvent::Measured {
+            offset_ms: 0,
+            took_ms: took,
+        },
+        &ended,
+    );
+    assert!(s
+        .h
+        .boots
+        .last()
+        .unwrap()
+        .segments
+        .iter()
+        .all(|seg| seg.measurements.is_empty()));
+}
+
+#[test]
+fn a_measurement_heard_after_a_later_manual_change_stays_before_it() {
+    // Stamped on the network thread, then the game thread recorded a manual change first.
+    let mut s = Sim::new(-2 * HOUR);
+    s.run(MIN);
+    let early = s.unlock();
+    let measured_at = s.stamp();
+    let offset = -s.err_ms;
+    s.run(500);
+    s.manual(4 * HOUR);
+    s.run(MIN);
+    let late = s.unlock();
+    s.h.record(
+        ClockEvent::Measured {
+            offset_ms: offset,
+            took_ms: 0,
+        },
+        &measured_at,
+    );
+    s.restart_after(HOUR);
+    s.reload();
+    s.measure();
+    assert_eq!(
+        s.offset(&early),
+        s.truth(&early),
+        "before the change: corrected"
+    );
+    assert!(
+        matches!(s.offset(&late), Offset::Unknown(_)),
+        "after it: not corrected"
+    );
+}
+
+#[test]
+fn an_unlock_processed_after_a_new_anchor_is_not_anchored_by_it() {
+    // Review S4: an unlock stamped in a manual segment whose clock was set wrong, processed
+    // by the store only after a later step anchored the clock.
+    let mut s = Sim::new(0);
+    s.manual(6 * HOUR);
+    s.run(MIN);
+    let stamped = s.stamp();
+    s.run(MIN);
+    s.measure();
+    s.step(true);
+    assert!(s.h.anchor.is_some());
+    assert!(!s.h.anchored(&stamped), "the anchor came after the unlock");
+    // An anchor from an earlier boot holds only if this boot had no manual change before.
+    let mut s = Sim::new(0);
+    s.measure();
+    s.restart_after(HOUR);
+    let before = s.stamp();
+    assert!(s.h.anchored(&before));
+}
+
+#[test]
+fn only_a_close_measurement_in_the_boot_segment_anchors() {
+    let mut s = Sim::new(0);
+    s.manual(200); // set by hand, close to network time
+    s.run(MIN);
+    s.measure();
+    assert!(
+        s.h.anchor.is_none(),
+        "a clock set by hand does not vouch for the RTC"
+    );
+}
+
+// ---- Damaged or crafted clock.txt (review B2) ----
+
+#[test]
+fn a_clock_file_that_does_not_make_sense_counts_as_damaged() {
+    let mut s = Sim::new(0);
+    s.measure();
+    s.run(MIN);
+    s.manual(HOUR);
+    s.run(MIN);
+    s.measure();
+    let good = s.h.records();
+    assert_eq!(History::from_records(&good).1, 0);
+    // Segments out of order.
+    let mut out_of_order = good.clone();
+    let seg_lines: Vec<usize> = out_of_order
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.starts_with("seg\t"))
+        .map(|(i, _)| i)
+        .collect();
+    let (a, b) = (seg_lines[0], seg_lines[1]);
+    let first = out_of_order[a].clone();
+    out_of_order[a] = out_of_order[b].clone();
+    out_of_order[b] = first;
+    assert!(History::from_records(&out_of_order).1 > 0);
+    // A missing manual line would merge two segments: the measurement after it then falls
+    // outside the segment it is filed in... and is caught.
+    let no_manual: Vec<String> = good
+        .iter()
+        .filter(|r| !r.contains("\tmanual"))
+        .cloned()
+        .collect();
+    let (h, bad) = History::from_records(&no_manual);
+    let _ = h;
+    assert_eq!(bad, 0, "on its own a lost line can look consistent");
+    // ...which is why the store trusts nothing from a damaged clock.txt (tests/store.rs).
+    // An absurd offset.
+    let absurd: Vec<String> = good
+        .iter()
+        .map(|r| {
+            if r.starts_with("meas\t") {
+                let mut f: Vec<&str> = r.split('\t').collect();
+                f[3] = "-9223372036854775808";
+                f.join("\t")
+            } else {
+                r.clone()
+            }
+        })
+        .collect();
+    assert!(History::from_records(&absurd).1 > 0);
 }

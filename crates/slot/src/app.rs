@@ -1918,8 +1918,10 @@ impl App {
                     return;
                 }
                 self.net_menu = None;
+                // Manual only if no shutdown is already under way (low battery, the sleep
+                // running out).
+                self.manual_shutdown = !(self.powering_off || self.restarting);
                 self.restarting = true;
-                self.manual_shutdown = true;
                 self.act_at = self.now() + SHUTDOWN_SHOW_MS;
                 self.set_led(LedState::Off);
             }
@@ -3562,6 +3564,7 @@ impl App {
         eprintln!("slot: sleep: lid opened as the sleep ran out, shutdown cancelled");
         self.expiring = false;
         self.powering_off = false;
+        self.manual_shutdown = false;
         self.last_led = None;
     }
 
@@ -3611,8 +3614,8 @@ impl App {
                 self.close_game_menu();
                 match PowerChoice::ALL[index] {
                     PowerChoice::Restart => {
+                        self.manual_shutdown = !(self.powering_off || self.restarting);
                         self.restarting = true;
-                        self.manual_shutdown = true;
                         self.act_at = self.now() + SHUTDOWN_SHOW_MS;
                         self.set_led(LedState::Off);
                     }
@@ -4000,6 +4003,9 @@ impl App {
         }
         self.close_game_menu();
         self.powering_off = true;
+        // Low battery, the doze timeout and the sleep running out never wait for RA (D5).
+        // A manual Power Off sets it again straight after.
+        self.manual_shutdown = false;
         self.act_at = self.now() + SHUTDOWN_SHOW_MS;
         self.set_led(LedState::Off);
     }

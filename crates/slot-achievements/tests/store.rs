@@ -303,7 +303,7 @@ fn a_damaged_account_file_is_kept_and_means_logged_out() {
     let time = FakeTime::new("boot-a");
     {
         let r = spawn(&root, time.clone());
-        r.h.set_account(Account::new("Dean", "TOKEN123"));
+        r.h.log_in(Account::new("Dean", "TOKEN123").unwrap());
         r.settle();
         assert_eq!(r.h.status().account.as_deref(), Some("Dean"));
     }
@@ -328,7 +328,7 @@ fn accounts_never_share_unlocks_or_pending_records() {
     let root = tempdir("isolation");
     let time = FakeTime::new("boot-a");
     let r = spawn(&root, time.clone());
-    r.h.set_account(Account::new("Alice", "TA"));
+    r.h.log_in(Account::new("Alice", "TA").unwrap());
     r.unlock(&time, "Alice", 100);
     r.settle();
     // An unlock under A does not count for B.
@@ -337,7 +337,7 @@ fn accounts_never_share_unlocks_or_pending_records() {
 
     // Log Out, Log In as B: A's records stay, untouched.
     let before = std::fs::read(root.join(LEDGER_FILE)).unwrap();
-    r.h.set_account(None);
+    r.h.log_out();
     r.settle();
     assert!(
         !root.join("account.txt").exists(),
@@ -348,7 +348,7 @@ fn accounts_never_share_unlocks_or_pending_records() {
         before,
         "ledger untouched"
     );
-    r.h.set_account(Account::new("Bob", "TB"));
+    r.h.log_in(Account::new("Bob", "TB").unwrap());
     // The same achievement under B: a second record, B's own.
     r.unlock(&time, "Bob", 100);
     r.settle();
@@ -360,7 +360,7 @@ fn accounts_never_share_unlocks_or_pending_records() {
     assert_eq!(r.h.status().pending, 1, "the status counts only Bob's");
 
     // A logs back in: A's pending unlock is still there to send.
-    r.h.set_account(Account::new("ALICE", "TA2"));
+    r.h.log_in(Account::new("ALICE", "TA2").unwrap());
     r.settle();
     assert_eq!(r.h.status().pending, 1);
     assert_eq!(ledger_on_card(&root).pending("alice")[0].id, 100);
@@ -534,7 +534,7 @@ fn unchanged_files_are_not_rewritten() {
     let time = FakeTime::new("boot-a");
     {
         let r = spawn(&root, time.clone());
-        r.h.set_account(Account::new("Dean", "T1"));
+        r.h.log_in(Account::new("Dean", "T1").unwrap());
         r.unlock(&time, "dean", 1);
         r.settle();
     }
@@ -543,7 +543,7 @@ fn unchanged_files_are_not_rewritten() {
     std::thread::sleep(Duration::from_millis(30));
     let r = spawn(&root, time.clone());
     r.unlock(&time, "dean", 1); // a duplicate: nothing changes
-    r.h.set_account(Account::new("Dean", "T1")); // the same account again
+    r.h.log_in(Account::new("Dean", "T1").unwrap()); // the same account again
     r.settle();
     let after: Vec<_> = files.iter().map(|f| mtime(f)).collect();
     assert_eq!(before, after, "a file was rewritten with the same contents");
@@ -568,7 +568,10 @@ fn clock_events_reach_clock_txt_and_offsets_follow_the_rules() {
     {
         let r = spawn(&root, time.clone());
         time.run(30_000);
-        r.h.clock_event(ClockEvent::Measured { offset_ms: 37_000 });
+        r.h.clock_event(ClockEvent::Measured {
+            offset_ms: 37_000,
+            took_ms: 0,
+        });
         time.run(60_000);
         r.unlock(&time, "dean", 3);
         r.settle();
@@ -585,7 +588,10 @@ fn clock_events_reach_clock_txt_and_offsets_follow_the_rules() {
     })));
     let r = spawn(&root, next.clone());
     assert_eq!(r.h.offset("dean", 3, false), Some(Offset::Wait));
-    r.h.clock_event(ClockEvent::Measured { offset_ms: 37_000 });
+    r.h.clock_event(ClockEvent::Measured {
+        offset_ms: 37_000,
+        took_ms: 0,
+    });
     // 5 s in the old boot + 2 h powered off.
     assert_eq!(r.h.offset("dean", 3, false), Some(Offset::Seconds(7205)));
     assert_eq!(r.h.offset("dean", 99, false), None);
@@ -643,9 +649,10 @@ fn a_failing_card_raises_the_alarm_keeps_the_unlock_and_retries() {
         !early.iter().any(|n| matches!(n, Notice::Unlocked { .. })),
         "no notice for an unlock not kept: {early:?}"
     );
-    // The card comes back: the retry writes it, then the notice follows.
+    // The card comes back: the retry (backing off 1, 5, 15 s) writes it, then the notice
+    // follows.
     std::fs::remove_file(&blocked).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(25);
     let mut seen = Vec::new();
     while Instant::now() < deadline && !seen.contains(&Notice::WriteRecovered) {
         seen.extend(r.notices.try_iter());
@@ -688,8 +695,12 @@ fn a_rom_is_hashed_once_and_again_only_when_it_changes() {
     // Through the store: the index reaches the card, once.
     let r = spawn(&root, FakeTime::new("boot-a"));
     let h1 = r.h.rom_hash(gba, &rom).unwrap();
-    r.settle();
     let index = root.join("games/index.txt");
+    // A hash is a question, not a pending write: wait for the index itself.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !index.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let first = mtime(&index);
     std::thread::sleep(Duration::from_millis(20));
     assert_eq!(r.h.rom_hash(gba, &rom).unwrap(), h1);
@@ -700,4 +711,274 @@ fn a_rom_is_hashed_once_and_again_only_when_it_changes() {
         "a cached lookup does not rewrite the index"
     );
     assert!(r.h.rom_hash(gba, &root.join("missing.gba")).is_err());
+}
+
+// ---- Review fixes (B2, B3, S2, minor) ----
+
+/// A clock the test can make slow, so a batch is seen under way.
+struct SlowTime {
+    inner: Arc<FakeTime>,
+    delay_ms: std::sync::atomic::AtomicU64,
+}
+
+impl TimeSource for SlowTime {
+    fn now(&self) -> Stamp {
+        let d = self.delay_ms.load(Ordering::SeqCst);
+        if d > 0 {
+            std::thread::sleep(Duration::from_millis(d));
+        }
+        self.inner.now()
+    }
+}
+
+#[test]
+fn an_unreadable_ledger_is_never_written_over_and_is_merged_once_it_reads() {
+    let root = tempdir("unreadable");
+    let time = FakeTime::new("boot-a");
+    // Earlier records, on the card.
+    {
+        let r = spawn(&root, time.clone());
+        r.unlock(&time, "dean", 1);
+        r.unlock(&time, "dean", 2);
+        r.settle();
+    }
+    let good = std::fs::read(root.join(LEDGER_FILE)).unwrap();
+    // The ledger cannot be read now (here: something unreadable in its place).
+    std::fs::remove_file(root.join(LEDGER_FILE)).unwrap();
+    std::fs::create_dir(root.join(LEDGER_FILE)).unwrap();
+    std::fs::write(root.join(LEDGER_FILE).join("x"), b"").unwrap();
+    let r = spawn(&root, time.clone());
+    r.unlock(&time, "dean", 3);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !r.h.failing() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        r.h.failing(),
+        "the alarm is up while the ledger cannot be read"
+    );
+    assert!(
+        r.unlocked_notices().is_empty(),
+        "not announced: not on the card"
+    );
+    // The card reads again, with its records.
+    std::fs::remove_dir_all(root.join(LEDGER_FILE)).unwrap();
+    std::fs::write(root.join(LEDGER_FILE), &good).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while r.h.failing() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    r.settle();
+    let mut ids: Vec<u32> = ledger_on_card(&root)
+        .entries()
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec![1, 2, 3],
+        "nothing on the card was lost; the new unlock merged in"
+    );
+    assert_eq!(r.unlocked_notices(), vec![("dean".into(), 3)]);
+}
+
+#[test]
+fn a_damaged_clock_file_is_not_trusted_at_all() {
+    // Boot A: measured (clock 3 h slow), unlock, then a manual change and another
+    // measurement. If the manual line were lost, the unlock would be "corrected" by the
+    // measurement taken after the change: 3 hours wrong.
+    let root = tempdir("clockdamage");
+    let time = FakeTime::new("boot-a");
+    {
+        let r = spawn(&root, time.clone());
+        time.run(60_000);
+        r.unlock(&time, "dean", 4);
+        time.run(60_000);
+        r.h.clock_event(ClockEvent::Manual);
+        time.run(60_000);
+        r.h.clock_event(ClockEvent::Measured {
+            offset_ms: -10_800_000,
+            took_ms: 0,
+        });
+        r.settle();
+    }
+    let path = root.join("clock.txt");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let damaged: String = text
+        .lines()
+        .map(|l| {
+            if l.contains("\tmanual\t") {
+                l.replace("manual", "manuax")
+            } else {
+                l.to_string()
+            }
+        })
+        .map(|l| l + "\n")
+        .collect();
+    std::fs::write(&path, damaged).unwrap();
+    let next = Arc::new(FakeTime(Mutex::new(Stamp {
+        boot_id: "boot-b".into(),
+        boot_ms: 2000,
+        wall_ms: time.now().wall_ms + 3_600_000,
+    })));
+    let r = spawn(&root, next);
+    r.h.clock_event(ClockEvent::Measured {
+        offset_ms: 0,
+        took_ms: 0,
+    });
+    assert!(
+        matches!(r.h.offset("dean", 4, false), Some(Offset::Unknown(_))),
+        "a damaged history gives no offset, never a wrong one: {:?}",
+        r.h.offset("dean", 4, false)
+    );
+}
+
+#[test]
+fn progress_waits_while_the_ledger_cannot_be_written() {
+    let root = tempdir("s2");
+    let time = FakeTime::new("boot-a");
+    let r = spawn(&root, time.clone());
+    r.settle();
+    // The ledger's name is taken by a folder: its write fails; progress could be written.
+    std::fs::create_dir_all(root.join(LEDGER_FILE).join("x")).unwrap();
+    let key = ProgressKey {
+        account: "Dean".into(),
+        platform: "GBA".into(),
+        core: "mgba".into(),
+        stem: "Game".into(),
+    };
+    r.unlock(&time, "dean", 6);
+    r.h.offer_progress(key, vec![1; 64]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !r.h.failing() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    let progress = root.join("accounts/dean/progress/GBA/mgba/Game.rap");
+    assert!(!progress.exists(), "progress written before the ledger");
+    assert!(r.h.pending(), "still pending");
+    std::fs::remove_dir_all(root.join(LEDGER_FILE)).unwrap();
+    assert!(r.h.settle_for_poweroff(Duration::from_secs(10)));
+    assert!(progress.exists());
+    assert_eq!(ledger_on_card(&root).entries().len(), 1);
+}
+
+#[test]
+fn captures_arriving_while_the_store_is_busy_coalesce_and_are_capped() {
+    let root = tempdir("busy");
+    let inner = FakeTime::new("boot-a");
+    let time = Arc::new(SlowTime {
+        inner,
+        delay_ms: std::sync::atomic::AtomicU64::new(0),
+    });
+    let r = spawn(&root, time.clone());
+    r.settle();
+    time.delay_ms.store(150, Ordering::SeqCst);
+    let key = |stem: &str| ProgressKey {
+        account: "dean".into(),
+        platform: "GBA".into(),
+        core: "mgba".into(),
+        stem: stem.into(),
+    };
+    // Something to keep the store busy writing.
+    r.h.clock_event(ClockEvent::Manual);
+    std::thread::sleep(Duration::from_millis(20));
+    let mut accepted = 0;
+    for i in 0..200u32 {
+        if r.h
+            .offer_progress(key(&format!("G{}", i % 20)), i.to_le_bytes().to_vec())
+        {
+            accepted += 1;
+        }
+    }
+    // 8 distinct files may wait; further captures of those 8 replace theirs.
+    assert_eq!(
+        accepted,
+        8 * 10,
+        "only captures for the {} waiting files are taken",
+        8
+    );
+    time.delay_ms.store(0, Ordering::SeqCst);
+    r.settle();
+    let dir = root.join("accounts/dean/progress/GBA/mgba");
+    let files = std::fs::read_dir(&dir).unwrap().count();
+    assert_eq!(files, 8);
+    // Each holds the newest capture taken for it.
+    assert_eq!(
+        std::fs::read(dir.join("G0.rap")).unwrap(),
+        180u32.to_le_bytes()
+    );
+}
+
+#[test]
+fn a_store_that_has_stopped_is_never_waited_for() {
+    let root = tempdir("stopped");
+    let time = FakeTime::new("boot-a");
+    let r = spawn(&root, time.clone());
+    let h = r.h.clone();
+    drop(r);
+    assert!(!h.pending());
+    let began = Instant::now();
+    assert!(h.settle_for_poweroff(POWEROFF_WAIT));
+    assert!(began.elapsed() < Duration::from_millis(5));
+    assert!(h.offer_unlock("dean", ROM, 1, time.now()).is_err());
+}
+
+#[test]
+fn leftover_temporary_files_are_swept_at_start() {
+    let root = tempdir("sweep");
+    std::fs::create_dir_all(root.join("games")).unwrap();
+    std::fs::write(root.join(".unlocks.txt.123.0.tmp"), b"half").unwrap();
+    std::fs::write(root.join("games/.index.txt.9.1.tmp"), b"half").unwrap();
+    std::fs::write(root.join("keep.txt"), b"mine").unwrap();
+    let r = spawn(&root, FakeTime::new("boot-a"));
+    r.settle();
+    assert!(!root.join(".unlocks.txt.123.0.tmp").exists());
+    assert!(!root.join("games/.index.txt.9.1.tmp").exists());
+    assert!(root.join("keep.txt").exists());
+}
+
+#[test]
+fn questions_do_not_count_as_pending_writes() {
+    let root = tempdir("questions");
+    let r = spawn(&root, FakeTime::new("boot-a"));
+    r.settle();
+    let _ = r.h.unlocked("dean");
+    let _ = r.h.offset("dean", 1, false);
+    assert!(!r.h.pending());
+}
+
+#[test]
+fn a_store_that_dies_mid_write_is_never_waited_for() {
+    use std::sync::atomic::AtomicBool;
+    // The store's clock panics once told to: the thread dies in the middle of a batch,
+    // with an unlock still counted as pending.
+    struct Dying(AtomicBool, Arc<FakeTime>);
+    impl TimeSource for Dying {
+        fn now(&self) -> Stamp {
+            if self.0.load(Ordering::SeqCst) {
+                panic!("the store thread dies here (test)");
+            }
+            self.1.now()
+        }
+    }
+    let root = tempdir("dying");
+    let inner = FakeTime::new("boot-a");
+    let time = Arc::new(Dying(AtomicBool::new(false), inner.clone()));
+    let r = spawn(&root, time.clone());
+    r.settle();
+    time.0.store(true, Ordering::SeqCst);
+    let _ = r.h.offer_unlock("dean", ROM, 1, inner.now());
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!r.h.pending(), "a dead store has nothing pending");
+    let began = Instant::now();
+    assert!(r.h.settle_for_poweroff(POWEROFF_WAIT));
+    assert!(
+        began.elapsed() < Duration::from_millis(5),
+        "{:?}",
+        began.elapsed()
+    );
+    assert!(r.h.offer_unlock("dean", ROM, 2, inner.now()).is_err());
+    std::mem::forget(r); // its thread is gone; joining a panicked thread is fine, but skip
 }

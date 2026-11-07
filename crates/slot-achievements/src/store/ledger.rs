@@ -164,6 +164,28 @@ impl Ledger {
         (l, bad)
     }
 
+    /// Merges `other` (records kept in memory while the file could not be read) into this
+    /// one: for each (account, ID) the record furthest along is kept. Returns whether
+    /// anything changed.
+    pub fn absorb(&mut self, other: Ledger) -> bool {
+        let mut changed = false;
+        for e in other.entries {
+            match self.find_mut(&e.account, e.id) {
+                Some(old) => {
+                    if rank(e.status) > rank(old.status) {
+                        *old = e;
+                        changed = true;
+                    }
+                }
+                None => {
+                    self.entries.push(e);
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
     pub fn records(&self) -> Vec<String> {
         self.entries.iter().map(Entry::record).collect()
     }

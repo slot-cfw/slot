@@ -104,20 +104,22 @@ fn a_manual_restart_waits_too() {
 
 #[test]
 fn the_wait_is_never_more_than_250_ms() {
+    use std::sync::atomic::{AtomicBool, Ordering};
     let d = tmp_root_with_carts(&["Emerald"]);
-    // Every clock read takes a second: the batch outlasts the allowance.
-    struct Stuck;
+    // Once switched on, every clock read takes a second: the batch outlasts the allowance.
+    struct Stuck(AtomicBool);
     impl TimeSource for Stuck {
         fn now(&self) -> Stamp {
-            std::thread::sleep(Duration::from_millis(1000));
+            if self.0.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1000));
+            }
             time::now()
         }
     }
-    let mut a = app_playing_in(d.path(), "Emerald");
-    let (store, _rx) = store_in(d.path(), Arc::new(Stuck));
-    std::thread::sleep(Duration::from_millis(1200)); // past loading
-    a.set_ra_store(Some(store.handle()));
+    let stuck = Arc::new(Stuck(AtomicBool::new(false)));
+    let (mut a, store, _rx) = with_store(d.path(), stuck.clone());
     choose_power_off(&mut a);
+    stuck.0.store(true, Ordering::SeqCst);
     pending_unlock(&store);
     let began = Instant::now();
     a.poweroff();
@@ -127,6 +129,41 @@ fn the_wait_is_never_more_than_250_ms() {
         waited < Duration::from_millis(350),
         "power-off went on at the limit: {waited:?}"
     );
+}
+
+#[test]
+fn choosing_restart_during_a_low_battery_shutdown_does_not_make_it_manual() {
+    let d = tmp_root_with_carts(&["Emerald"]);
+    let (mut a, store, _rx) = with_store(d.path(), Arc::new(Slow));
+    a.on_battery(Battery {
+        percent: 2,
+        charge: Charge::Discharging,
+    });
+    a.apply(Action::PowerHold);
+    a.apply(Action::GbaDown(Btn::A)); // Restart
+    assert!(!a.manual_shutdown());
+    pending_unlock(&store);
+    let began = Instant::now();
+    a.restart();
+    assert!(
+        began.elapsed() < Duration::from_millis(30),
+        "{:?}",
+        began.elapsed()
+    );
+}
+
+#[test]
+fn low_battery_during_a_manual_restart_takes_over_and_never_waits() {
+    let d = tmp_root_with_carts(&["Emerald"]);
+    let (mut a, _store, _rx) = with_store(d.path(), Arc::new(time::System));
+    a.apply(Action::PowerHold);
+    a.apply(Action::GbaDown(Btn::A)); // Restart
+    assert!(a.manual_shutdown());
+    a.on_battery(Battery {
+        percent: 2,
+        charge: Charge::Discharging,
+    });
+    assert!(!a.manual_shutdown());
 }
 
 #[test]
@@ -231,7 +268,10 @@ fn a_manual_date_and_time_change_breaks_the_clock_history() {
     let h = store.handle();
     a.set_ra_store(Some(h.clone()));
     // Network time measured, then an unlock: it would be corrected by that measurement...
-    h.clock_event(ClockEvent::Measured { offset_ms: 0 });
+    h.clock_event(ClockEvent::Measured {
+        offset_ms: 0,
+        took_ms: 0,
+    });
     h.offer_unlock("dean", ROM, 5, time::now()).unwrap();
     assert!(h.settle_for_poweroff(Duration::from_secs(5)));
     assert!(h.status().damaged_lost == 0);
@@ -261,7 +301,10 @@ fn network_time_events_reach_the_clock_history() {
     let d = tmp_root_with_carts(&["Emerald"]);
     let (store, _rx) = store_in(d.path(), Arc::new(time::System));
     let listen = slot::achievements::clock_listener(store.handle());
-    listen(slot_net::TimeEvent::Measured { offset_s: 36.3504 });
+    listen(slot_net::TimeEvent::Measured {
+        offset_s: 36.3504,
+        took: Duration::from_millis(900),
+    });
     listen(slot_net::TimeEvent::Stepped { rtc_written: true });
     assert!(store.handle().settle_for_poweroff(Duration::from_secs(5)));
     let text = std::fs::read_to_string(slot_achievements::store::root(d.path()).join("clock.txt"))

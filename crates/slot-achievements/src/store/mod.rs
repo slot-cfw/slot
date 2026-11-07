@@ -116,7 +116,7 @@ impl ProgressKey {
             return None;
         }
         Some(
-            account::folder(root, &self.account)?
+            account::folder(root, &account::key(&self.account)?)?
                 .join("progress")
                 .join(&self.platform)
                 .join(&self.core)
@@ -162,13 +162,24 @@ enum Msg {
 }
 
 impl Msg {
-    /// Counted towards the D5 "pending" total (a write may follow).
+    /// Counted towards the queue bound and the D5 "pending" total: only messages that
+    /// can lead to a write. Questions (hash, unlocked, offset) are not.
     fn counted(&self) -> bool {
-        !matches!(self, Msg::Wake | Msg::Stop)
+        matches!(
+            self,
+            Msg::Unlock { .. }
+                | Msg::Clock(..)
+                | Msg::Account(_)
+                | Msg::Settle { .. }
+                | Msg::DismissDamaged
+        )
     }
 }
 
 struct Shared {
+    /// False once the store thread has ended (or panicked): nothing is pending then, and
+    /// nothing is offered to it.
+    alive: AtomicBool,
     /// Messages in the channel (for the bound).
     queued: AtomicUsize,
     /// Work not yet on the card: counted messages plus waiting progress files, and 1 while
@@ -232,7 +243,34 @@ impl StoreHandle {
         id: u32,
         at: Stamp,
     ) -> Result<(), Stamp> {
-        if self.shared.queued.load(Ordering::SeqCst) >= QUEUE_CAP {
+        if !self.shared.alive.load(Ordering::SeqCst)
+            || self.shared.queued.load(Ordering::SeqCst) >= QUEUE_CAP
+        {
+            return Err(at);
+        }
+        let msg = Msg::Unlock {
+            account: account.to_string(),
+            rom_hash: rom_hash.to_string(),
+            id,
+            at: at.clone(),
+        };
+        if self.send(msg) {
+            Ok(())
+        } else {
+            Err(at)
+        }
+    }
+
+    /// Hands an unlock over regardless of the queue bound. Only for stopping (not a frame):
+    /// nothing waits and nothing is dropped. `Err` only if the store has ended.
+    pub fn hand_over_unlock(
+        &self,
+        account: &str,
+        rom_hash: &str,
+        id: u32,
+        at: Stamp,
+    ) -> Result<(), Stamp> {
+        if !self.shared.alive.load(Ordering::SeqCst) {
             return Err(at);
         }
         let msg = Msg::Unlock {
@@ -284,10 +322,15 @@ impl StoreHandle {
         self.send(Msg::Clock(event, now));
     }
 
-    /// Log In (`Some`) or Log Out (`None`). Log Out deletes `account.txt` only; that
-    /// account's ledger records and files stay (D9).
-    pub fn set_account(&self, account: Option<Account>) {
-        self.send(Msg::Account(account));
+    /// Log In: keeps the user name and token in `account.txt`.
+    pub fn log_in(&self, account: Account) {
+        self.send(Msg::Account(Some(account)));
+    }
+
+    /// Log Out: deletes `account.txt` only; that account's ledger records and files stay
+    /// (D9).
+    pub fn log_out(&self) {
+        self.send(Msg::Account(None));
     }
 
     /// The server's answer for a pending unlock (used by Phase 3).
@@ -345,7 +388,8 @@ impl StoreHandle {
 
     /// Whether anything is still to be written.
     pub fn pending(&self) -> bool {
-        self.shared.pending.lock().map(|p| *p > 0).unwrap_or(false)
+        self.shared.alive.load(Ordering::SeqCst)
+            && self.shared.pending.lock().map(|p| *p > 0).unwrap_or(false)
     }
 
     /// D5: waits until nothing is pending, at most `limit`. Returns whether everything was
@@ -355,7 +399,7 @@ impl StoreHandle {
         let Ok(mut p) = self.shared.pending.lock() else {
             return false;
         };
-        while *p > 0 {
+        while *p > 0 && self.shared.alive.load(Ordering::SeqCst) {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return false;
@@ -396,6 +440,26 @@ impl UnlockSink {
         self.store
             .offer_unlock(&self.account, &self.rom_hash, id, at)
     }
+
+    /// At stop: past the queue bound, so nothing is left behind.
+    pub fn hand_over(&self, id: u32, at: Stamp) -> Result<(), Stamp> {
+        self.store
+            .hand_over_unlock(&self.account, &self.rom_hash, id, at)
+    }
+}
+
+/// Marks the store ended however its thread finishes (a panic included), so nobody waits
+/// for it.
+struct Ended(Arc<Shared>);
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        self.0.alive.store(false, Ordering::SeqCst);
+        if let Ok(mut p) = self.0.pending.lock() {
+            *p = 0;
+        }
+        self.0.idle.notify_all();
+    }
 }
 
 /// The running store. Dropping it stops the thread after its current batch.
@@ -406,8 +470,12 @@ pub struct Store {
 
 impl Store {
     pub fn spawn(config: Config, notices: Sender<Notice>) -> std::io::Result<Store> {
+        // The boot ID is read once per process; read it here rather than on the emulator
+        // thread at the first unlock.
+        let _ = time::now();
         let (tx, rx) = mpsc::channel();
         let shared = Arc::new(Shared {
+            alive: AtomicBool::new(true),
             queued: AtomicUsize::new(0),
             pending: Mutex::new(0),
             idle: Condvar::new(),
@@ -426,6 +494,7 @@ impl Store {
         let thread = std::thread::Builder::new()
             .name("slot-ra-store".into())
             .spawn(move || {
+                let _ended = Ended(shared.clone());
                 let mut worker = Worker::load(config, shared.clone(), notices);
                 shared.done_pending(1);
                 worker.run(rx);
@@ -474,9 +543,16 @@ struct Worker {
     unannounced: Vec<(String, u32)>,
     damaged_lost: usize,
     retry: usize,
+    /// The file on the card could not be read, or a damaged copy could not be kept
+    /// aside: it is never written over until it reads (and anything kept in memory
+    /// meanwhile is merged in).
+    ledger_blocked: bool,
+    clock_blocked: bool,
 }
 
-fn keep_aside(path: &Path, now_ms: i64, recovered: usize, lost: usize) {
+/// Returns false if the damaged file could not be kept aside (so it must not be written
+/// over).
+fn keep_aside(path: &Path, now_ms: i64, recovered: usize, lost: usize) -> bool {
     match lines::preserve(path, now_ms) {
         Ok(Some(to)) => eprintln!(
             "slot: achievements: {} could not be read whole; kept as {}, {recovered} records recovered, {lost} lost",
@@ -487,33 +563,56 @@ fn keep_aside(path: &Path, now_ms: i64, recovered: usize, lost: usize) {
             "slot: achievements: {} could not be read whole again today ({recovered} recovered, {lost} lost); today's earlier copy is kept",
             path.display()
         ),
-        Err(e) => eprintln!(
-            "slot: achievements: {} is damaged and could not be kept aside: {e}",
-            path.display()
-        ),
+        Err(e) => {
+            eprintln!(
+                "slot: achievements: {} is damaged and could not be kept aside ({e}); it is left as it is and not written",
+                path.display()
+            );
+            return false;
+        }
     }
+    true
 }
 
-/// Reads one file at start-up. A file that does not read whole, or holds records that do
-/// not make sense, is kept aside (never overwritten) and what could be recovered is
-/// marked to be written back. Returns the parsed value, its tracker, whether it must be
-/// written, and how many records were lost.
+/// A file read at start-up (or read again after it could not be).
+struct LoadedFile<T> {
+    value: T,
+    tracked: Tracked,
+    /// Must be written back (recovered from damage).
+    dirty: bool,
+    lost: usize,
+    /// Could not be read, or kept aside: never write over it.
+    blocked: bool,
+}
+
+/// Reads one file. A file that does not read whole, or holds records that do not make
+/// sense, is kept aside (never overwritten) and what could be recovered is marked to be
+/// written back. A file that cannot be read at all, or whose damaged copy cannot be kept
+/// aside, is blocked: left exactly as it is.
 fn load_file<T>(
     path: PathBuf,
     header: &str,
     now_ms: i64,
     notices: &Sender<Notice>,
     parse: impl Fn(&[String]) -> (T, usize),
-) -> (T, Tracked, bool, usize) {
+) -> LoadedFile<T> {
     let (records, bytes, lost) = match lines::load(&path, header) {
         Ok(Loaded::Missing) => (Vec::new(), None, 0),
         Ok(Loaded::Clean { records, bytes }) => (records, Some(bytes), 0),
         Ok(Loaded::Damaged { records, lost }) => (records, None, lost),
         Err(e) => {
-            // Unreadable (not damaged): leave it alone and start empty; nothing is
-            // written over it until something changes.
-            eprintln!("slot: achievements: could not read {}: {e}", path.display());
-            (Vec::new(), None, 0)
+            eprintln!(
+                "slot: achievements: could not read {} ({e}); it is left alone until it reads",
+                path.display()
+            );
+            let (value, _) = parse(&[]);
+            return LoadedFile {
+                value,
+                tracked: Tracked::new(path),
+                dirty: false,
+                lost: 0,
+                blocked: true,
+            };
         }
     };
     let (value, bad) = parse(&records);
@@ -524,11 +623,37 @@ fn load_file<T>(
             Some(b) => tracked.read_as(b),
             None => tracked,
         };
-        return (value, tracked, false, 0);
+        return LoadedFile {
+            value,
+            tracked,
+            dirty: false,
+            lost: 0,
+            blocked: false,
+        };
     }
-    keep_aside(&path, now_ms, records.len().saturating_sub(bad), lost);
+    let kept = keep_aside(&path, now_ms, records.len().saturating_sub(bad), lost);
     let _ = notices.send(Notice::Damaged { file: path, lost });
-    (value, tracked, true, lost)
+    LoadedFile {
+        value,
+        tracked,
+        dirty: kept,
+        lost,
+        blocked: !kept,
+    }
+}
+
+/// Removes temporary files an interrupted `atomic_write` left (`.<name>.<pid>.<n>.tmp`).
+fn sweep_temporaries(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') && name.ends_with(".tmp") && e.path().is_file() {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 impl Worker {
@@ -536,28 +661,35 @@ impl Worker {
         let now = config.time.now();
         let root = config.root;
         let ms = now.wall_ms;
+        sweep_temporaries(&root);
+        sweep_temporaries(&root.join("games"));
 
-        let (ledger, ledger_file, ledger_dirty, ledger_lost) = load_file(
+        let l = load_file(
             root.join(LEDGER_FILE),
             ledger::HEADER,
             ms,
             &notices,
             Ledger::from_records,
         );
-        let (mut history, clock_file, mut clock_dirty, _) = load_file(
+        let c = load_file(
             root.join(CLOCK_FILE),
             clock::HEADER,
             ms,
             &notices,
             History::from_records,
         );
+        // A clock history that did not read whole is not trusted at all: a lost line can
+        // merge two segments. Its unlocks then fall back to their own anchored flag, or
+        // to no offset.
+        let mut history = if c.lost > 0 || c.blocked {
+            History::default()
+        } else {
+            c.value
+        };
         let had_anchor = history.anchor.is_some();
         history.start(&now, config.at_boot);
-        if !config.at_boot && had_anchor {
-            // The cleared anchor must reach the card before anything relies on it.
-            clock_dirty = true;
-        }
-        let (account, mut account_file, account_bad, _) = load_file(
+        let clock_dirty = c.dirty || (!config.at_boot && had_anchor);
+        let a = load_file(
             root.join(ACCOUNT_FILE),
             account::HEADER,
             ms,
@@ -568,12 +700,13 @@ impl Worker {
                 None => (None, r.len()),
             },
         );
-        if account_bad {
+        let mut account_file = a.tracked;
+        if a.lost > 0 {
             // Kept aside; logged out until the next Log In. Nothing to write back.
             eprintln!("slot: achievements: account.txt could not be read; logged out");
             account_file.forget();
         }
-        let (index, index_file, index_dirty, _) = load_file(
+        let i = load_file(
             root.join(INDEX_FILE),
             index::HEADER,
             ms,
@@ -586,25 +719,84 @@ impl Worker {
             time: config.time,
             shared,
             notices,
-            ledger,
+            ledger: l.value,
             history,
-            index,
-            account,
-            ledger_file,
-            clock_file,
-            index_file,
+            index: i.value,
+            account: a.value,
+            ledger_file: l.tracked,
+            clock_file: c.tracked,
+            index_file: i.tracked,
             account_file,
-            ledger_dirty,
+            ledger_dirty: l.dirty,
             clock_dirty,
-            index_dirty,
+            index_dirty: i.dirty,
             account_dirty: false,
             unannounced: Vec::new(),
-            damaged_lost: ledger_lost,
+            damaged_lost: l.lost,
             retry: 0,
+            ledger_blocked: l.blocked,
+            clock_blocked: c.blocked,
         };
         w.flush();
         w.publish();
         w
+    }
+
+    /// Tries again to read a ledger that could not be read (or kept aside), and merges
+    /// what was kept in memory meanwhile into it.
+    fn reopen_ledger(&mut self, now_ms: i64) {
+        let l = load_file(
+            self.root.join(LEDGER_FILE),
+            ledger::HEADER,
+            now_ms,
+            &self.notices,
+            Ledger::from_records,
+        );
+        if l.blocked {
+            return;
+        }
+        let mut on_card = l.value;
+        let added = on_card.absorb(std::mem::take(&mut self.ledger));
+        self.ledger = on_card;
+        self.ledger_file = l.tracked;
+        self.ledger_blocked = false;
+        self.ledger_dirty = self.ledger_dirty || l.dirty || added;
+        self.damaged_lost += l.lost;
+        eprintln!("slot: achievements: unlocks.txt reads again; what was kept in memory is merged");
+    }
+
+    /// The same for the clock history: this boot (from memory) is added to what reads.
+    fn reopen_clock(&mut self, now_ms: i64) {
+        let c = load_file(
+            self.root.join(CLOCK_FILE),
+            clock::HEADER,
+            now_ms,
+            &self.notices,
+            History::from_records,
+        );
+        if c.blocked {
+            return;
+        }
+        let mut on_card = if c.lost > 0 {
+            History::default()
+        } else {
+            c.value
+        };
+        let now = self.time.now();
+        on_card.boots.retain(|b| b.id != now.boot_id);
+        on_card.boots.extend(
+            self.history
+                .boots
+                .iter()
+                .filter(|b| b.id == now.boot_id)
+                .cloned(),
+        );
+        // Only an anchor set this boot, in memory, is kept.
+        on_card.anchor = self.history.anchor.clone();
+        self.history = on_card;
+        self.clock_file = c.tracked;
+        self.clock_blocked = false;
+        self.clock_dirty = true;
     }
 
     fn run(&mut self, rx: Receiver<Msg>) {
@@ -622,7 +814,6 @@ impl Worker {
                     Err(_) => return,
                 }
             };
-            self.shared.add_pending(1); // this batch
             let mut handled = 0;
             let mut stop = false;
             let mut next = first;
@@ -640,7 +831,7 @@ impl Worker {
             }
             self.flush();
             self.publish();
-            self.shared.done_pending(handled + 1);
+            self.shared.done_pending(handled);
             if stop {
                 return;
             }
@@ -648,7 +839,12 @@ impl Worker {
     }
 
     fn dirty(&self) -> bool {
-        self.ledger_dirty || self.clock_dirty || self.index_dirty || self.account_dirty
+        self.ledger_dirty
+            || self.clock_dirty
+            || self.index_dirty
+            || self.account_dirty
+            || self.ledger_blocked
+            || self.clock_blocked
     }
 
     fn handle(&mut self, msg: Msg) {
@@ -744,7 +940,12 @@ impl Worker {
         let mut failed = false;
         let now = self.time.now();
 
-        if self.clock_dirty {
+        if self.clock_blocked {
+            self.reopen_clock(now.wall_ms);
+        }
+        if self.clock_blocked {
+            failed = true;
+        } else if self.clock_dirty {
             self.history.prune(&self.ledger.boots_needed());
             let text = lines::encode(clock::HEADER, &self.history.records());
             match self.clock_file.write(text.as_bytes()) {
@@ -756,7 +957,13 @@ impl Worker {
             }
         }
 
-        if self.ledger_dirty {
+        if self.ledger_blocked {
+            self.reopen_ledger(now.wall_ms);
+        }
+        if self.ledger_blocked {
+            // Unlocks wait in memory, unannounced, until the ledger reads again.
+            failed = true;
+        } else if self.ledger_dirty {
             let dropped = self.ledger.prune(now.wall_ms);
             if dropped > 0 {
                 eprintln!(
@@ -810,13 +1017,17 @@ impl Worker {
             }
         }
 
-        // Progress last, after the ledger.
-        let waiting: Vec<(ProgressKey, Vec<u8>)> = self
-            .shared
-            .progress
-            .lock()
-            .map(|mut p| p.drain().collect())
-            .unwrap_or_default();
+        // Progress last, and only once the ledger is on the card: a progress file must
+        // never describe a game past an unlock the ledger does not hold yet.
+        let waiting: Vec<(ProgressKey, Vec<u8>)> = if self.ledger_dirty || self.ledger_blocked {
+            Vec::new()
+        } else {
+            self.shared
+                .progress
+                .lock()
+                .map(|mut p| p.drain().collect())
+                .unwrap_or_default()
+        };
         for (key, bytes) in waiting {
             match key.path(&self.root) {
                 Some(path) => {
@@ -839,7 +1050,7 @@ impl Worker {
 
         let was = self.shared.failing.swap(failed, Ordering::SeqCst);
         if failed {
-            self.retry = (self.retry + 1).min(RETRY.len() - 1);
+            self.retry = (self.retry + 1).min(RETRY.len());
             if !was {
                 let _ = self.notices.send(Notice::WriteFailed);
             }
