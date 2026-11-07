@@ -41,6 +41,8 @@ pub fn ra_factory() -> RaFactory {
 }
 
 /// RetroAchievements' threads, owned by the session (0.6.0 Phase 5). `None` while Off.
+/// Never stopped on the game thread: stopping the network worker can wait for a request in
+/// flight (up to its 20 s deadline).
 struct RaSide {
     ra: Option<Ra>,
     /// Turned Off: the threads being stopped on a thread of their own (the game thread
@@ -53,6 +55,50 @@ struct RaSide {
     booted: bool,
     /// A damaged file was reported and not dismissed: records lost.
     damaged: Option<usize>,
+}
+
+impl Drop for RaSide {
+    /// Leaving the app (the host window closed, or a fatal display error): the threads are
+    /// stopped on a thread of their own, never here.
+    fn drop(&mut self) {
+        if let Some(ra) = self.ra.take() {
+            let _ = stop_elsewhere(ra, None);
+        }
+    }
+}
+
+/// Stops RetroAchievements' threads on a thread of their own, after the emulator has
+/// answered `held` (it hands over every unlock it holds first). If no thread can be made,
+/// they are left running, idle: never stopped on the calling thread, which stopping could
+/// hold for a request in flight.
+fn stop_elsewhere(
+    ra: Ra,
+    held: Option<std::sync::mpsc::Receiver<()>>,
+) -> Option<std::thread::JoinHandle<()>> {
+    // The instance is sent once the thread exists, so a failed spawn never drops it here.
+    let (tx, rx) = std::sync::mpsc::channel::<Ra>();
+    let stopper = std::thread::Builder::new()
+        .name("slot-ra-stop".into())
+        .spawn(move || {
+            if let Some(held) = held {
+                let _ = held.recv_timeout(Duration::from_secs(5));
+            }
+            if let Ok(ra) = rx.recv() {
+                drop(ra);
+            }
+            eprintln!("slot: achievements: stopped");
+        });
+    match stopper {
+        Ok(h) => {
+            let _ = tx.send(ra);
+            Some(h)
+        }
+        Err(e) => {
+            eprintln!("slot: achievements: could not stop in the background ({e}); left running");
+            std::mem::forget(ra);
+            None
+        }
+    }
 }
 
 pub struct Session {
@@ -173,26 +219,21 @@ impl Session {
         self.app.ra_stopped();
         let store = ra.store();
         self.app.set_ra_settling(Some(store));
-        let stopper = std::thread::Builder::new()
-            .name("slot-ra-stop".into())
-            .spawn(move || {
-                // The emulator thread hands over what it holds first (a command it answers
-                // within a tick; at once if it has gone).
-                if let Some(rx) = held {
-                    let _ = rx.recv_timeout(Duration::from_secs(5));
-                }
-                drop(ra);
-                eprintln!("slot: achievements: stopped");
-            });
-        match stopper {
-            Ok(h) => self.ra.stopping = Some(h),
-            Err(e) => eprintln!("slot: achievements: could not stop in the background ({e})"),
-        }
+        self.ra.stopping = stop_elsewhere(ra, held);
     }
 
     /// Once a frame, never waiting: the menu's requests, starting and stopping, answers from
     /// RetroAchievements' threads, and what the menu shows.
     fn sync_ra(&mut self) {
+        // Off, with nothing running, stopping or asked for: nothing to do.
+        if !self.app.ra_on()
+            && self.ra.ra.is_none()
+            && self.ra.stopping.is_none()
+            && !self.app.ra_requests_waiting()
+        {
+            self.ra.booted = true;
+            return;
+        }
         if self
             .ra
             .stopping
@@ -208,12 +249,16 @@ impl Session {
             match &mut r {
                 crate::app::RaRequest::SetOn(true) => {}
                 crate::app::RaRequest::SetOn(false) => self.stop_ra(),
-                crate::app::RaRequest::LogIn { user, password } => {
-                    if let Some(ra) = &mut self.ra.ra {
+                crate::app::RaRequest::LogIn { user, password } => match &mut self.ra.ra {
+                    Some(ra) => {
                         let password = std::mem::take(password);
                         ra.log_in(user, password);
                     }
-                }
+                    // Not running (it could not start): never left waiting for an answer.
+                    None => self
+                        .app
+                        .ra_login_answer(Err(slot_achievements::net::LoginProblem::Unreachable)),
+                },
                 crate::app::RaRequest::LogOut => {
                     if let Some(ra) = &mut self.ra.ra {
                         // Nothing more is recorded for the account logging out.
@@ -690,6 +735,7 @@ impl Session {
             }
             Some(CoreState::Failed) | None => {
                 self.emu = None;
+                self.ra_game_ended();
                 self.app.on_core_failed();
             }
         }

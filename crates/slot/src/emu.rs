@@ -108,6 +108,8 @@ struct Shared {
     linked: AtomicU64,
     peer_ended: AtomicBool,
     bios_mismatch: AtomicBool,
+    /// RetroAchievements is tracking this game (a plan is applied).
+    tracking: AtomicBool,
     driven: AtomicBool,
     locked: AtomicBool,
     present_ns: AtomicU64,
@@ -220,6 +222,7 @@ impl EmuHandle {
             linked: AtomicU64::new(0),
             peer_ended: AtomicBool::new(false),
             bios_mismatch: AtomicBool::new(false),
+            tracking: AtomicBool::new(false),
             driven: AtomicBool::new(false),
             locked: AtomicBool::new(false),
             present_ns: AtomicU64::new(PRESENT.as_nanos() as u64),
@@ -295,6 +298,11 @@ impl EmuHandle {
     /// later phase decides when to start it. Unlocks are reported on the plan's channel.
     pub fn set_achievements(&self, plan: Option<AchievementPlan>) {
         request(&self.cmds, &self.shared, Cmd::Achievements(plan));
+    }
+
+    /// RetroAchievements is tracking this game.
+    pub fn tracking(&self) -> bool {
+        self.shared.tracking.load(Ordering::Acquire)
     }
 
     /// Stops tracking. The answer comes once every unlock the emulator thread still held
@@ -690,6 +698,7 @@ impl Worker {
                                         self.shared.resume_refused.store(true, Ordering::Release);
                                         // Another player's game: never tracked.
                                         ra.forbid();
+                                        self.shared.tracking.store(false, Ordering::Release);
                                         c.prime();
                                         t.send(NETPACKET_RELIABLE, &cable::ready_packet());
                                     }
@@ -1062,9 +1071,13 @@ impl Worker {
             Cmd::SetOption(key, value) => {
                 core.set_option(&key, &value);
             }
-            Cmd::Achievements(plan) => ra.set(plan, core),
+            Cmd::Achievements(plan) => {
+                ra.set(plan, core);
+                self.shared.tracking.store(ra.tracking(), Ordering::Release);
+            }
             Cmd::StopAchievements(done) => {
                 ra.set(None, core);
+                self.shared.tracking.store(false, Ordering::Release);
                 let _ = done.send(());
             }
             Cmd::EndLink => {

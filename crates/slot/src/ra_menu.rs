@@ -64,6 +64,9 @@ impl std::fmt::Debug for Effect {
 pub struct Context {
     /// The saved setting.
     pub on: bool,
+    /// RetroAchievements' threads are running (not starting, nor waiting for earlier
+    /// ones to stop): only then can the account be used.
+    pub running: bool,
     /// The logged-in account's user name, as the server spells it.
     pub account: Option<String>,
     /// That account's unlocks waiting to sync (for the Log Out question).
@@ -148,7 +151,11 @@ impl RaMenu {
             Some(u) => MenuRow::acts("Account", u, "Log Out"),
             None => MenuRow::acts("Account", "Log In", "Log In"),
         };
-        let account = if cx.on { account } else { account.greyed() };
+        let account = if cx.on && cx.running {
+            account
+        } else {
+            account.greyed()
+        };
         vec![
             (Row::Switch, MenuRow::setting(TITLE, on_off)),
             (Row::Account, account),
@@ -158,7 +165,7 @@ impl RaMenu {
     /// Where the cursor is, never on a greyed row.
     fn at(row: Row, cx: &Context) -> Row {
         match row {
-            Row::Account if !cx.on => Row::Switch,
+            Row::Account if !(cx.on && cx.running) => Row::Switch,
             r => r,
         }
     }

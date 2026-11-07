@@ -147,6 +147,11 @@ impl App {
             .retain(|r| !matches!(r, RaRequest::LogIn { .. }));
     }
 
+    /// The menu has asked the session for something not yet taken.
+    pub fn ra_requests_waiting(&self) -> bool {
+        !self.ra_requests.is_empty()
+    }
+
     /// What the menu's requests are, oldest first. The session takes them once a frame.
     pub fn take_ra_requests(&mut self) -> Vec<RaRequest> {
         std::mem::take(&mut self.ra_requests)
@@ -209,6 +214,7 @@ impl App {
         let store = &self.ra_info.status.store;
         Context {
             on: self.ra_on(),
+            running,
             account: store.account.clone().filter(|_| running),
             pending: store.pending,
             connected: self.wifi_connected(),

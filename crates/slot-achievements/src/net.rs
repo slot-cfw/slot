@@ -142,7 +142,7 @@ enum Cmd {
     },
     LogIn {
         user: String,
-        password: String,
+        password: Secret,
         gen: u64,
         ticket: u64,
     },
@@ -193,7 +193,7 @@ impl WorkerHandle {
         let gen = self.requested.fetch_add(1, Ordering::SeqCst) + 1;
         let _ = self.tx.send(Cmd::LogIn {
             user: user.to_string(),
-            password,
+            password: Secret(password),
             gen,
             ticket,
         });
@@ -303,12 +303,18 @@ struct State {
     skip_after: Option<u32>,
 }
 
-/// Overwrites the password's own buffer before it is dropped. Best effort only: copies
-/// made on the way (the C string for rcheevos, its request buffer, the request text) are
-/// freed without being overwritten, straight after the one request.
-fn wipe(mut s: String) {
-    // SAFETY: zero bytes are valid UTF-8.
-    unsafe { s.as_bytes_mut().fill(0) };
+/// A password on its way to the one request that sends it. Its buffer is overwritten when
+/// it is dropped, however that happens: sent, or a queued Log In dropped by a later Stop or
+/// a worker that has gone. Best effort only: copies made on the way (the C string for
+/// rcheevos, its request buffer, the request text) are freed without being overwritten,
+/// straight after the one request.
+struct Secret(String);
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        // SAFETY: zero bytes are valid UTF-8.
+        unsafe { self.0.as_bytes_mut().fill(0) };
+    }
 }
 
 impl State {
@@ -480,9 +486,9 @@ impl State {
         self.pause = Some(p);
     }
 
-    fn log_in(&mut self, user: &str, password: String, ticket: u64) {
-        let call = api::login_password(user, &password);
-        wipe(password);
+    fn log_in(&mut self, user: &str, password: Secret, ticket: u64) {
+        let call = api::login_password(user, &password.0);
+        drop(password);
         let reply = match call {
             Ok(call) => self.send(&call),
             Err(e) => Err(e),

@@ -348,14 +348,23 @@ fn late_definitions_for_a_rom_ejected_and_inserted_again_are_dropped() {
 #[test]
 fn a_preparation_in_flight_at_log_out_never_activates() {
     let d = tmp_root_with_carts(&[STEM]);
+    // A large ROM seen for the first time: the preparation reads the account at once, then
+    // spends a while hashing, so the Log Out lands while it is under way and it still comes
+    // back with the account it read.
+    let mut big = vec![0u8; 32 << 20];
+    big[0x200] = 1;
+    std::fs::write(rom_of(d.path()), &big).unwrap();
     let server = Server::default();
     let mut ra = ra_with(d.path(), &server, false);
     ra.store().log_in(Account::new("Dean", "TOKEN").unwrap());
     ra.store()
         .write_cache(&game_cache(&rom_hash(d.path())), &defs(30));
+    assert!(ra.store().settle_for_poweroff(Duration::from_secs(5)));
+    wait("the account", 5, || ra.status().store.account.is_some());
     ra.game_started(console::GAMEBOY_ADVANCE, rom_of(d.path()), None);
+    std::thread::sleep(Duration::from_millis(10));
     ra.log_out();
-    assert_eq!(tracks(&mut ra, 1_000), 0);
+    assert_eq!(tracks(&mut ra, 2_000), 0);
 }
 
 #[test]
@@ -654,9 +663,23 @@ fn turning_on_during_a_game_tracks_from_the_next_game_started() {
 fn logging_out_during_a_game_stops_tracking_at_once() {
     let d = card_with_resume(true);
     logged_in_with_cache(d.path(), 30);
+    // Two achievements: one at 5 frames (proves tracking ran before the Log Out), one at
+    // 60 (would unlock afterwards if it still did).
+    {
+        let ra = ra_with(d.path(), &Server::default(), false);
+        let mut quick = fake::def(1, "0xH000200=1.5.");
+        quick.title = "Quick";
+        let slow = fake::def(2, "0xH000200=1.60.");
+        ra.store().write_cache(
+            &game_cache(&rom_hash(d.path())),
+            &fake::game_sets(510, console::GAMEBOY_ADVANCE, "Test", &[quick, slow]),
+        );
+        assert!(ra.store().settle_for_poweroff(Duration::from_secs(5)));
+    }
     let mut p = Pass::boot(d.path(), &Server::default(), Arc::new(Knobs::default()));
     p.until("the game", Pass::playing);
     p.ones_until(10);
+    assert!(ledger(d.path()).get("dean", 1).is_some(), "tracking ran");
     // Log Out from the in-game menu.
     p.act(Action::QuickMenu);
     p.until("the menu", |p| p.session.app().in_game_open());
@@ -680,9 +703,41 @@ fn logging_out_during_a_game_stops_tracking_at_once() {
         p.press(Btn::B);
     }
     p.until("the game", |p| !p.session.app().in_game_open());
-    // Enough for the achievement many times over: nothing is recorded for anyone.
+    assert!(!p.session.emu().unwrap().tracking());
+    // Enough for the second achievement: nothing more is recorded for anyone.
     p.ones_until(80);
-    assert!(ledger(d.path()).entries().is_empty());
+    assert_eq!(ledger(d.path()).entries().len(), 1);
+    assert!(ledger(d.path()).get("dean", 2).is_none());
+}
+
+#[test]
+fn an_unlock_just_before_off_is_kept_and_nothing_is_tracked_after() {
+    let d = card_with_resume(true);
+    logged_in_with_cache(d.path(), 5);
+    let mut p = Pass::boot(d.path(), &Server::default(), Arc::new(Knobs::default()));
+    p.until("the game", Pass::playing);
+    // The unlock, then Off in the very next frames.
+    p.knobs.limit.store(6, Ordering::SeqCst);
+    p.until("the frame", |p| p.knobs.ones.load(Ordering::SeqCst) >= 6);
+    assert!(p.session.emu().unwrap().tracking());
+    p.switch_ra();
+    assert!(p.session.ra().is_none());
+    p.until("the threads to stop", |p| !p.session.ra_stopping());
+    assert!(
+        !p.session.emu().unwrap().tracking(),
+        "tracking stopped in the running game"
+    );
+    assert!(ledger(d.path()).get("dean", 1).is_some(), "written first");
+    // Off: the next game is not tracked, however far it gets.
+    let before = std::fs::read(ra_root(d.path()).join("unlocks.txt")).unwrap();
+    p.eject_and_insert_again();
+    let start = p.knobs.ones.load(Ordering::SeqCst);
+    p.ones_until(start + 40);
+    assert_eq!(
+        std::fs::read(ra_root(d.path()).join("unlocks.txt")).unwrap(),
+        before,
+        "nothing written while Off"
+    );
 }
 
 #[test]

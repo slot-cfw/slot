@@ -713,3 +713,43 @@ fn a_menu_opened_over_a_notice_takes_it_away_and_a_fresh_one_comes_back() {
     let (_, notice) = a.unlock_notice_wanted().expect("shown again");
     assert_eq!(notice.title.as_deref(), Some("Life Leech"));
 }
+
+#[test]
+fn ejecting_from_the_menu_drops_a_half_typed_password() {
+    let d = tmp_root_with_carts(&["Emerald", "Fusion"]);
+    let mut a = app_playing_in(d.path(), "Emerald");
+    a.set_net(Box::new(Wifi(Arc::new(Mutex::new(true)))));
+    a.apply(Action::QuickMenu);
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::A);
+    while a.in_game() != Some(InGame::Row(QuickRow::RetroAchievements)) {
+        press(&mut a, Btn::Down);
+    }
+    press(&mut a, Btn::A);
+    press(&mut a, Btn::Right);
+    a.take_ra_requests();
+    a.set_ra_info(running(None));
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::A);
+    type_text(&mut a, "Dean");
+    press(&mut a, Btn::Start);
+    type_text(&mut a, "pw");
+    // Hold MENU: eject, from anywhere.
+    a.apply(Action::Eject);
+    assert!(!a.ra_menu_open(), "the screens went with the game");
+    assert!(a.take_ra_requests().is_empty());
+}
+
+#[test]
+fn the_account_is_greyed_while_the_threads_are_not_running() {
+    let (_d, mut a, _) = on_settings(true);
+    open(&mut a);
+    press(&mut a, Btn::A);
+    a.take_ra_requests();
+    // On, but not running yet (starting, or earlier threads still stopping).
+    a.set_ra_info(RaInfo::default());
+    assert!(rows(&a)[1].2, "greyed");
+    press(&mut a, Btn::Down);
+    assert_eq!(selected(&a), 0);
+}

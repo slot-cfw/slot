@@ -136,7 +136,8 @@ pub struct ListRow {
     pub tag: Option<&'static str>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Its `Debug` output never contains what was typed (a password, even when shown).
+#[derive(Clone, PartialEq, Eq)]
 pub struct KeyboardView {
     /// The small line at the top: "Wi-Fi password", or a RetroAchievements step (0.6.0).
     pub title: &'static str,
@@ -151,6 +152,21 @@ pub struct KeyboardView {
     pub note: Option<String>,
     /// The four character rows and the special row, as drawn.
     pub keys: Vec<Vec<Key>>,
+}
+
+impl std::fmt::Debug for KeyboardView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyboardView")
+            .field("title", &self.title)
+            .field("heading", &self.heading)
+            .field("typed", &self.field.chars().count())
+            .field("page", &self.page)
+            .field("row", &self.row)
+            .field("col", &self.col)
+            .field("shown", &self.shown)
+            .field("note", &self.note)
+            .finish()
+    }
 }
 
 impl KeyboardView {

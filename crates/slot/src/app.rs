@@ -3356,8 +3356,10 @@ impl App {
         };
         self.in_game = None;
         self.menu_tap = None;
-        // An in-game Network screen goes with its game (anything typed is wiped).
+        // An in-game Network or RetroAchievements screen goes with its game (anything
+        // typed is wiped).
         self.net_menu = None;
+        self.close_ra_menu();
         self.end_link();
         self.close_game_menu();
         self.flush_eject(&cart);
@@ -3881,8 +3883,10 @@ impl App {
             old.starter.cancel();
         }
         // A link (here, one a peer started) runs the game; no menu may hold it.
-        if self.in_game.take() == Some(InGame::Network) {
-            self.net_menu = None;
+        match self.in_game.take() {
+            Some(InGame::Network) => self.net_menu = None,
+            Some(InGame::Achievements) => self.close_ra_menu(),
+            _ => {}
         }
         self.menu_tap = None;
         self.game_menu = Some(GameMenu::Working {

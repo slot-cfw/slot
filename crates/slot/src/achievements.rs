@@ -193,6 +193,11 @@ impl Achievements {
         }
     }
 
+    /// A plan is applied (tracking this game).
+    pub(crate) fn tracking(&self) -> bool {
+        self.tracker.is_some()
+    }
+
     /// The resume state was unserialized successfully at start, before any frame.
     pub(crate) fn resumed(&mut self) {
         self.fresh_resume = true;

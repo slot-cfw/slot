@@ -114,7 +114,9 @@ pub struct Keyboard {
 impl Keyboard {
     pub fn new(max_len: usize) -> Keyboard {
         Keyboard {
-            text: String::new(),
+            // Reserved whole, so typing never moves the text and leaves an earlier copy
+            // behind un-wiped (a password).
+            text: String::with_capacity(max_len.min(256) * 4),
             page: KeyPage::Lower,
             row: 1,
             col: 0,
