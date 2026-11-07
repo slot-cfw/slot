@@ -10,7 +10,7 @@
 //!   runs into its deadline (or is frozen and fails after wake) and is retried later.
 //! - Every unlock stays in the ledger (owned by the RA store) until the server settles it.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -20,7 +20,7 @@ use crate::api::{self, Award, Call, GameData, Outcome, Pause, Reply};
 use crate::store::account::Account;
 use crate::store::clock::{NetTime, Offset};
 use crate::store::ledger::Status;
-use crate::store::{game_cache, unlocks_cache, StoreHandle};
+use crate::store::{game_cache, unlocks_cache, PendingUnlock, StoreHandle};
 
 /// First retry wait, doubling to the ceiling, only while connected (architecture 8.2).
 pub const RETRY_FIRST: Duration = Duration::from_secs(30);
@@ -75,23 +75,37 @@ pub struct NetStatus {
     /// Requests are held: no network time, and the clock reads earlier than the anchor.
     pub waiting_for_time: bool,
     pub last_error: Option<String>,
+    /// The wait chosen at the last back-off (cleared by a new connection).
+    pub retry_wait: Option<Duration>,
 }
 
 enum Cmd {
     Connected,
     Poke,
-    Game { rom_hash: String, have_cache: bool },
-    LogIn { user: String, password: String },
-    LogOut,
-    Stop,
+    Game {
+        rom_hash: String,
+        have_cache: bool,
+    },
+    LogIn {
+        user: String,
+        password: String,
+        gen: u64,
+    },
+    LogOut {
+        gen: u64,
+    },
+    Stop {
+        gen: u64,
+    },
 }
 
 #[derive(Clone)]
 pub struct WorkerHandle {
     tx: Sender<Cmd>,
-    /// Set by Stop, Log In and Log Out: the worker stops before its next request, so a
-    /// round of submissions never holds them up (or sends with an old token).
-    interrupt: Arc<AtomicBool>,
+    /// Counts Stop, Log In and Log Out requests (raised before the command is sent). The
+    /// worker sends nothing while a requested one has not been applied yet, so a round of
+    /// submissions never holds them up. A counter cannot be lost or stick.
+    requested: Arc<AtomicU64>,
     status: Arc<Mutex<NetStatus>>,
 }
 
@@ -118,16 +132,17 @@ impl WorkerHandle {
 
     /// Log In with a password: sent once over TLS, never kept.
     pub fn log_in(&self, user: &str, password: String) {
-        self.interrupt.store(true, Ordering::SeqCst);
+        let gen = self.requested.fetch_add(1, Ordering::SeqCst) + 1;
         let _ = self.tx.send(Cmd::LogIn {
             user: user.to_string(),
             password,
+            gen,
         });
     }
 
     pub fn log_out(&self) {
-        self.interrupt.store(true, Ordering::SeqCst);
-        let _ = self.tx.send(Cmd::LogOut);
+        let gen = self.requested.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = self.tx.send(Cmd::LogOut { gen });
     }
 
     pub fn status(&self) -> NetStatus {
@@ -149,10 +164,10 @@ impl Worker {
     ) -> std::io::Result<Worker> {
         let (tx, rx) = mpsc::channel();
         let status = Arc::new(Mutex::new(NetStatus::default()));
-        let interrupt = Arc::new(AtomicBool::new(false));
+        let requested = Arc::new(AtomicU64::new(0));
         let handle = WorkerHandle {
             tx,
-            interrupt: interrupt.clone(),
+            requested: requested.clone(),
             status: status.clone(),
         };
         let poke = handle.clone();
@@ -163,7 +178,9 @@ impl Worker {
             link: Box::new(link),
             events,
             status,
-            interrupt,
+            requested,
+            applied: 0,
+            failed_this_round: false,
             renewed: false,
             pause: None,
             retry_at: None,
@@ -192,8 +209,8 @@ impl Drop for Worker {
     /// 20 s deadline). Only for turning RetroAchievements off, never on the sleep,
     /// power-off or exit paths (Phase 5 must keep it so).
     fn drop(&mut self) {
-        self.handle.interrupt.store(true, Ordering::SeqCst);
-        let _ = self.handle.tx.send(Cmd::Stop);
+        let gen = self.handle.requested.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = self.handle.tx.send(Cmd::Stop { gen });
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
@@ -201,7 +218,12 @@ impl Drop for Worker {
 }
 
 struct State {
-    interrupt: Arc<AtomicBool>,
+    requested: Arc<AtomicU64>,
+    /// The last Stop, Log In or Log Out applied.
+    applied: u64,
+    /// A round (one `work`) backs off once however many of its requests fail, so a
+    /// failing definitions request and a failing unlock do not double the wait twice.
+    failed_this_round: bool,
     store: StoreHandle,
     transport: Box<dyn Transport>,
     link: Box<dyn Link>,
@@ -250,8 +272,6 @@ impl State {
                 }
                 next = rx.try_recv().ok();
             }
-            // Everything that asked for an interruption has been applied.
-            self.interrupt.store(false, Ordering::SeqCst);
             self.work();
             self.publish();
         }
@@ -279,8 +299,6 @@ impl State {
     }
 
     fn apply(&mut self, cmd: Cmd) -> bool {
-        // The command that asked for the interruption is being applied now.
-        self.interrupt.store(false, Ordering::SeqCst);
         match cmd {
             Cmd::Connected => {
                 // A new connection: the back-off and a paused 403 start over.
@@ -288,6 +306,9 @@ impl State {
                 self.retry_at = None;
                 self.step = RETRY_FIRST;
                 self.time_waiting = false;
+                if let Ok(mut s) = self.status.lock() {
+                    s.retry_wait = None;
+                }
                 if matches!(
                     self.pause,
                     Some(Pause::Access(_)) | Some(Pause::UnsupportedClient)
@@ -304,14 +325,27 @@ impl State {
                     self.games.push((rom_hash, have_cache));
                 }
             }
-            Cmd::LogIn { user, password } => self.log_in(&user, password),
-            Cmd::LogOut => {
+            Cmd::LogIn {
+                user,
+                password,
+                gen,
+            } => {
+                // A later Log In, Log Out or Stop still queued makes this one's request
+                // refused, so a cancelled password is never sent.
+                self.applied = self.applied.max(gen);
+                self.log_in(&user, password)
+            }
+            Cmd::LogOut { gen } => {
+                self.applied = self.applied.max(gen);
                 self.store.log_out();
                 self.renewed = false;
                 self.pause = None;
                 self.games.clear();
             }
-            Cmd::Stop => return false,
+            Cmd::Stop { gen } => {
+                self.applied = self.applied.max(gen);
+                return false;
+            }
         }
         true
     }
@@ -327,7 +361,7 @@ impl State {
     }
 
     fn send(&mut self, call: &Call) -> Result<Reply, String> {
-        if self.interrupt.load(Ordering::SeqCst) {
+        if self.requested.load(Ordering::SeqCst) > self.applied {
             return Err(INTERRUPTED.into());
         }
         if !self.link.connected() {
@@ -355,12 +389,18 @@ impl State {
             // wakes us.
             return;
         }
-        eprintln!(
-            "slot: achievements: retrying in {} s ({why})",
-            self.step.as_secs()
-        );
-        self.retry_at = Some(Instant::now() + self.step);
-        self.step = (self.step * 2).min(RETRY_CEILING);
+        if !self.failed_this_round {
+            self.failed_this_round = true;
+            eprintln!(
+                "slot: achievements: retrying in {} s ({why})",
+                self.step.as_secs()
+            );
+            self.retry_at = Some(Instant::now() + self.step);
+            if let Ok(mut s) = self.status.lock() {
+                s.retry_wait = Some(self.step);
+            }
+            self.step = (self.step * 2).min(RETRY_CEILING);
+        }
         if let Ok(mut s) = self.status.lock() {
             s.last_error = Some(why);
         }
@@ -430,6 +470,7 @@ impl State {
             return;
         }
         self.retry_at = None;
+        self.failed_this_round = false;
         let Some(account) = self.store.account() else {
             return;
         };
@@ -440,8 +481,11 @@ impl State {
         let account = self.store.account().unwrap_or(account);
         while let Some((hash, have_cache)) = self.games.first().cloned() {
             if !self.fetch_game(&account, &hash, have_cache) {
-                // Kept for later; unlocks are still sent (a failing definitions request
-                // never holds them back).
+                // Kept for later, behind any other game waiting, so one failing game never
+                // holds the others back; unlocks are still sent (a failing definitions
+                // request never holds them back either).
+                let g = self.games.remove(0);
+                self.games.push(g);
                 break;
             }
             self.games.remove(0);
@@ -554,6 +598,9 @@ impl State {
                     }
                 }
             }
+            // Never sent (interrupted, offline, waiting for network time): the game stays
+            // queued and is fetched again, so its session and unlock list are not lost.
+            Err(e) if not_sent(&e) => return false,
             Err(e) => eprintln!("slot: achievements: session start failed: {e}"),
         }
         if !have_cache {
@@ -583,7 +630,7 @@ impl State {
     fn submit(&mut self, account: &Account) {
         let mut pending = self.store.pending_unlocks(&account.user);
         if let Some(after) = self.skip_after.take() {
-            if let Some(i) = pending.iter().position(|(id, _)| *id == after) {
+            if let Some(i) = pending.iter().position(|p| p.id == after) {
                 pending.rotate_left(i + 1);
             }
         }
@@ -591,7 +638,12 @@ impl State {
             .connected_at
             .is_some_and(|c| c.elapsed() >= NET_TIME_WAIT);
         self.time_waiting = false;
-        for (id, hash) in pending {
+        for PendingUnlock {
+            id,
+            rom_hash: hash,
+            attempts,
+        } in pending
+        {
             if !self.link.connected() || self.pause.is_some() {
                 return;
             }
@@ -648,7 +700,15 @@ impl State {
                     self.paused(p);
                     return;
                 }
-                Award::Retry(why) => {
+                Award::Unsure(code) if attempts + 1 >= api::UNSURE_TRIES => {
+                    eprintln!(
+                        "slot: achievements: {id} held for investigation after {} tries ({code}: {:?})",
+                        attempts + 1,
+                        verdict.message
+                    );
+                    self.store.settle(&account.user, id, Status::Held, &code);
+                }
+                Award::Unsure(why) | Award::Retry(why) => {
                     self.store.attempt_failed(&account.user, id, "retry");
                     self.skip_after = Some(id);
                     self.failed(why);

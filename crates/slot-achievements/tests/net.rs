@@ -80,6 +80,8 @@ struct ServerState {
     delay: Duration,
     /// Answers forced for the next achievement-set requests.
     sets_answers: Answers,
+    /// Wi-Fi drops just after the next achievement-set answer (before the session start).
+    wifi_off_after_sets: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone, Default)]
@@ -157,6 +159,11 @@ impl Server {
                 }),
                 Err(e) => Err(e),
             },
+            "achievementsets" if s.wifi_off_after_sets.is_some() => {
+                let on = s.wifi_off_after_sets.take().unwrap();
+                on.store(false, Ordering::SeqCst);
+                ok(s.game.clone().unwrap())
+            }
             "achievementsets" => match &s.game {
                 Some(g) => ok(g.clone()),
                 None => {
@@ -1012,5 +1019,137 @@ fn stopping_the_worker_does_not_wait_for_a_whole_round() {
         began.elapsed() < Duration::from_millis(800),
         "{:?}",
         began.elapsed()
+    );
+}
+
+#[test]
+fn a_puzzling_answer_is_retried_twice_then_held_never_dropped() {
+    let r = rig("unsure");
+    let odd = Ok((200, r#"{"Success":false}"#.to_string()));
+    r.server.with(|s| {
+        drop(
+            s.award_answers
+                .insert(1, vec![odd.clone(), odd.clone(), odd]),
+        )
+    });
+    r.unlock(1);
+    r.connect();
+    r.quiet();
+    assert_eq!(r.status_of(1), Some(Status::Pending), "first try: kept");
+    r.w.connected();
+    r.quiet();
+    assert_eq!(r.status_of(1), Some(Status::Pending), "second try: kept");
+    r.w.connected();
+    wait("held", 5, || r.status_of(1) == Some(Status::Held));
+    assert_eq!(r.server.calls("awardachievement").len(), 3);
+    assert_eq!(
+        r.ledger().get("dean", 1).unwrap().last_error,
+        "unexpected_200"
+    );
+    // Never sent again, never discarded.
+    r.w.connected();
+    r.quiet();
+    assert_eq!(r.server.calls("awardachievement").len(), 3);
+}
+
+#[test]
+fn a_round_with_two_failures_backs_off_once() {
+    let r = rig("backoffonce");
+    r.server.with(|s| {
+        s.sets_answers = vec![Ok(fake::gateway(503))];
+        s.award_answers.insert(1, vec![Ok(fake::gateway(503))]);
+    });
+    r.unlock(1);
+    r.w.game(ROM, false);
+    r.connect();
+    r.quiet();
+    assert_eq!(r.server.calls("achievementsets").len(), 1);
+    assert_eq!(r.server.calls("awardachievement").len(), 1);
+    assert_eq!(
+        r.w.status().retry_wait,
+        Some(Duration::from_secs(30)),
+        "one doubling per round, not one per failed request"
+    );
+}
+
+#[test]
+fn a_log_in_cancelled_by_log_out_never_sends_the_password() {
+    let r = rig("loginlogout");
+    for id in 1..=10 {
+        r.unlock(id);
+    }
+    r.server.with(|s| s.delay = Duration::from_millis(200));
+    r.connect();
+    wait("started", 5, || {
+        !r.server.calls("awardachievement").is_empty()
+    });
+    // Both queued behind the request in flight.
+    r.w.log_in("Dean", "hunter2".into());
+    r.w.log_out();
+    wait("logged out", 5, || r.h.account().is_none());
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        r.server
+            .calls("login2")
+            .iter()
+            .all(|p| get(p, "p").is_none()),
+        "the cancelled password was sent"
+    );
+}
+
+#[test]
+fn a_session_start_cut_off_by_wifi_dropping_is_fetched_again() {
+    let r = rig("sessioncut");
+    let game = fake::game_sets(510, 5, "Castlevania", &[fake::def(11, "0xH001000=1")]);
+    r.server.with(|s| {
+        s.game = Some(game);
+        s.session_unlocks = vec![11];
+        s.wifi_off_after_sets = Some(r.wifi.on.clone());
+    });
+    r.connect();
+    r.w.game(ROM, false);
+    r.quiet();
+    assert!(r.server.calls("startsession").is_empty(), "never sent");
+    assert!(
+        r.events.try_recv().is_err(),
+        "not handed back without its unlocks"
+    );
+    r.connect();
+    match r.events.recv_timeout(Duration::from_secs(5)).unwrap() {
+        Event::GameReady { unlocked, .. } => assert_eq!(unlocked, vec![11]),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(r.server.calls("startsession").len(), 1);
+}
+
+#[test]
+fn a_failing_game_waits_behind_the_other_games() {
+    let r = rig("gamerotate");
+    let other = "fedcba9876543210fedcba9876543210";
+    r.server.with(|s| {
+        s.game = Some(fake::game_sets(
+            510,
+            5,
+            "Castlevania",
+            &[fake::def(11, "0xH001000=1")],
+        ));
+        s.sets_answers = vec![Ok(fake::gateway(503))];
+    });
+    r.w.game(ROM, true);
+    r.w.game(other, true);
+    r.connect();
+    r.quiet();
+    r.w.connected();
+    r.quiet();
+    let order: Vec<String> = r
+        .server
+        .calls("achievementsets")
+        .iter()
+        .map(|p| get(p, "m").unwrap_or_default())
+        .collect();
+    assert_eq!(
+        order,
+        vec![ROM, other, ROM],
+        "the failing game goes to the back"
     );
 }

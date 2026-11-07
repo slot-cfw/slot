@@ -1,6 +1,8 @@
 //! `games/index.txt` (architecture 6.3, 7.1): ROM path, size and modification time to its
 //! RetroAchievements hash, so a ROM is hashed only the first time it is seen or after it
-//! changes. Hashing happens on the RA store thread only.
+//! changes. The store thread only looks up and records here; the hash itself is taken on
+//! the caller's thread (`StoreHandle::rom_hash`), so a large ROM never holds up an unlock
+//! write or a shutdown.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -78,7 +80,10 @@ impl Index {
         true
     }
 
-    /// Looks a ROM up, hashing it here if it is new or changed.
+    /// Looks a ROM up, hashing it here, on this thread, if it is new or changed. For tests
+    /// and tools only: never call it on the RA store thread (use `cached` and `record`
+    /// around a hash taken elsewhere, as `StoreHandle::rom_hash` does).
+    #[doc(hidden)]
     pub fn lookup(&mut self, console_id: u32, path: &Path) -> Result<Looked, String> {
         let (size, mtime_ns) = stat(path).map_err(|e| format!("{}: {e}", path.display()))?;
         if let Some(h) = self.cached(path, size, mtime_ns) {

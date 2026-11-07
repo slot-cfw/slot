@@ -91,7 +91,12 @@ impl Entry {
     }
 
     fn parse(record: &str) -> Option<Entry> {
-        let f = lines::fields(record, 12)?;
+        // Records written before the `republished` field (11 fields, the Phase 2 builds)
+        // still read, as not yet republished: a ledger is never lost to an upgrade.
+        let mut f = lines::fields(record, 12).or_else(|| lines::fields(record, 11))?;
+        if f.len() == 11 {
+            f.push("0");
+        }
         let account = f[2];
         let rom_hash = f[3];
         if !super::account::valid_name(account)
@@ -323,5 +328,25 @@ fn rank(s: Status) -> u8 {
         Status::Held => 1,
         Status::Rejected => 2,
         Status::Synced => 3,
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    #[test]
+    fn an_eleven_field_record_from_before_republished_still_reads() {
+        let h = "0123456789abcdef0123456789abcdef";
+        let old = format!("42\tpending\tdean\t{h}\t1000\tboot1\t5\t1\t2\t-\t1000");
+        let e = Entry::parse(&old).expect("an 11-field record reads");
+        assert_eq!((e.id, e.attempts, e.republished), (42, 2, false));
+        assert_eq!(
+            Entry::parse(&e.record()),
+            Some(e.clone()),
+            "rewritten with 12"
+        );
+        assert!(Entry::parse(&format!("{old}\t1\textra")).is_none());
+        assert!(Entry::parse("42\tpending\tdean").is_none());
     }
 }

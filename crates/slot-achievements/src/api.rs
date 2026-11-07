@@ -557,9 +557,18 @@ pub enum Award {
     Held(String),
     /// Stop sending until the pause is lifted; the record stays pending.
     Pause(Pause),
-    /// Network error, timeout, `5xx`, an unexpected answer: stays pending, retried later.
+    /// Network error, timeout, `5xx`, an answer that is not the server's JSON: stays
+    /// pending, retried later.
     Retry(String),
+    /// The server's JSON, but not an answer we expect (`200` with `Success: false` and no
+    /// code, another 4xx, another achievement awarded). Retried a few times, as it may be
+    /// passing, then held for investigation ([`UNSURE_TRIES`]), so it can never be retried
+    /// for ever or silently dropped.
+    Unsure(String),
 }
+
+/// Sent attempts after which an [`Award::Unsure`] answer is held instead of retried.
+pub const UNSURE_TRIES: u32 = 3;
 
 /// Statuses rcheevos' own client retries (rc_client.c `rc_client_should_retry`).
 pub fn retryable(http: u16) -> bool {
@@ -618,13 +627,16 @@ pub fn classify_award(v: &Verdict, awarded: u32, id: u32) -> Award {
     if json && (code_is(v, "not_found") || v.result == rc::NOT_FOUND || v.http == 409) {
         return Award::Rejected(code());
     }
-    if v.http == 403 || v.result == rc::ACCESS_DENIED || code_is(v, "access_denied") {
+    // A 403 pauses only when it is the server's own answer: a proxy's or captive portal's
+    // HTML 403 is retried like any other answer that is not the server's.
+    if json && (v.http == 403 || v.result == rc::ACCESS_DENIED || code_is(v, "access_denied")) {
         return Award::Pause(Pause::Access(
             v.message.clone().unwrap_or_else(|| "Access denied".into()),
         ));
     }
-    if v.result == rc::OK && v.succeeded && awarded == id {
-        // "User already has" also comes back as a success (with a message).
+    // "User already has" also comes back as a success (with a message). A success that
+    // names no achievement (an older or trimmed answer) is the server accepting this one.
+    if v.result == rc::OK && v.succeeded && (awarded == id || awarded == 0) {
         return Award::Synced;
     }
     let what = format!(
@@ -635,10 +647,8 @@ pub fn classify_award(v: &Verdict, awarded: u32, id: u32) -> Award {
     if !json {
         return Award::Retry(what);
     }
-    // A JSON answer we do not expect (another 4xx, another achievement awarded, a failure
-    // with no known code): kept for investigation like a 422, so one strange record can
-    // never hold back the others or be retried for ever.
-    Award::Held(format!("unexpected_{}", v.http))
+    // A JSON answer we do not expect: retried a few times, then held (see Unsure).
+    Award::Unsure(format!("unexpected_{}", v.http))
 }
 
 /// What any other answer (login, sets, session) means.
@@ -850,15 +860,22 @@ mod tests {
             Award::Retry(_)
         ));
         assert!(matches!(a(404, ""), Award::Retry(_)));
-        // Unexpected JSON answers are held for investigation, never retried for ever.
+        // Unexpected JSON answers are retried a few times, then held (the worker counts).
         assert!(
-            matches!(a(200, &fake::award_ok(43)), Award::Held(_)),
+            matches!(a(200, &fake::award_ok(43)), Award::Unsure(_)),
             "another achievement awarded: not taken as this one"
         );
-        assert!(matches!(a(200, r#"{"Success":false}"#), Award::Held(_)));
+        assert!(matches!(a(200, r#"{"Success":false}"#), Award::Unsure(_)));
         assert!(matches!(
             a(410, r#"{"Success":false,"Error":"Gone"}"#),
-            Award::Held(_)
+            Award::Unsure(_)
+        ));
+        // A success naming no achievement is this one accepted.
+        assert_eq!(a(200, r#"{"Success":true}"#), Award::Synced);
+        // Only the server's own 403 pauses; a captive portal's HTML 403 is retried.
+        assert!(matches!(
+            a(403, "<html><body>Forbidden</body></html>"),
+            Award::Retry(_)
         ));
     }
 

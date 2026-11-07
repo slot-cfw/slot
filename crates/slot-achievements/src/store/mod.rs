@@ -125,6 +125,15 @@ impl ProgressKey {
     }
 }
 
+/// A pending unlock as the network worker sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingUnlock {
+    pub id: u32,
+    pub rom_hash: String,
+    /// Failed attempts so far (sent, but not settled).
+    pub attempts: u32,
+}
+
 enum Msg {
     Unlock {
         account: String,
@@ -168,7 +177,7 @@ enum Msg {
     GetAccount(Sender<Option<Account>>),
     Pending {
         account: String,
-        reply: Sender<Vec<(u32, String)>>,
+        reply: Sender<Vec<PendingUnlock>>,
     },
     Attempt {
         account: String,
@@ -419,8 +428,8 @@ impl StoreHandle {
         self.ask(Msg::GetAccount)
     }
 
-    /// The account's pending unlocks, oldest first: (achievement, ROM hash).
-    pub fn pending_unlocks(&self, account: &str) -> Vec<(u32, String)> {
+    /// The account's pending unlocks, oldest first.
+    pub fn pending_unlocks(&self, account: &str) -> Vec<PendingUnlock> {
         let account = account.to_string();
         self.ask(|reply| Msg::Pending { account, reply })
     }
@@ -1188,7 +1197,11 @@ impl Worker {
                         self.ledger
                             .pending(&k)
                             .into_iter()
-                            .map(|e| (e.id, e.rom_hash.clone()))
+                            .map(|e| PendingUnlock {
+                                id: e.id,
+                                rom_hash: e.rom_hash.clone(),
+                                attempts: e.attempts,
+                            })
                             .collect()
                     })
                     .unwrap_or_default();

@@ -419,8 +419,11 @@ fn d5_a_pending_unlock_is_on_the_card_within_250_ms_and_before_progress() {
         core: "mgba".into(),
         stem: "Game".into(),
     };
-    assert!(r.h.offer_progress(key, vec![9; 4096]));
+    assert!(r.h.offer_progress(key.clone(), vec![9; 4096]));
     r.unlock(&time, "dean", 42);
+    // A capture taken after the unlock (the store may already have written the first one
+    // before the unlock arrived, which is correct): it must wait for the ledger.
+    assert!(r.h.offer_progress(key, vec![8; 4096]));
     let began = Instant::now();
     assert!(
         r.h.settle_for_poweroff(POWEROFF_WAIT),
@@ -1014,7 +1017,11 @@ fn a_store_that_dies_mid_write_is_never_waited_for() {
     r.settle();
     time.0.store(true, Ordering::SeqCst);
     let _ = r.h.offer_unlock("dean", ROM, 1, inner.now());
-    std::thread::sleep(Duration::from_millis(100));
+    // The panic (and its backtrace) can take a while on a loaded machine.
+    let died = Instant::now();
+    while r.h.pending() && died.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
     assert!(!r.h.pending(), "a dead store has nothing pending");
     let began = Instant::now();
     assert!(r.h.settle_for_poweroff(POWEROFF_WAIT));
