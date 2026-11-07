@@ -17,12 +17,15 @@
 //! - Triggered achievements are collected during the frame and deactivated only after
 //!   rcheevos has finished it, so each can fire once.
 //!
-//! No networking, storage, accounts or UI live here.
+//! The RA store (`store`) keeps files; no networking or UI live here.
 
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::marker::PhantomData;
 
 use slot_retro::{MemoryDescriptor, MemoryMap};
+
+pub mod hash;
+pub mod store;
 
 /// rcheevos console IDs for the systems slot.advance supports (rc_consoles.h).
 pub mod console {

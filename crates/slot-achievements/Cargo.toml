@@ -8,10 +8,11 @@ description = "RetroAchievements evaluation for slot.advance, on rcheevos (vendo
 links = "rcheevos"
 
 [dependencies]
+libc.workspace = true
 slot-retro = { path = "../slot-retro" }
+slot-store = { path = "../slot-store" }
 
 [dev-dependencies]
-libc.workspace = true
 
 [build-dependencies]
 cc = "1"

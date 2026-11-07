@@ -13,6 +13,7 @@
 
 #include "rc_libretro.h"
 #include "rc_runtime.h"
+#include "rhash/md5.h"
 
 typedef struct slot_ra_call {
   const rc_libretro_memory_regions_t *regions;
@@ -153,4 +154,17 @@ uint32_t slot_ra_peek(const rc_libretro_memory_regions_t *regions, uint32_t addr
   current = NULL;
   *ok = !call.invalid;
   return value;
+}
+
+/* MD5 of a buffer (rhash's md5.c), for resume fingerprints. */
+void slot_ra_md5(const uint8_t *data, size_t len, uint8_t digest[16]) {
+  md5_state_t md5;
+  md5_init(&md5);
+  while (len > 0) {
+    int chunk = len > 0x10000000 ? 0x10000000 : (int)len;
+    md5_append(&md5, data, chunk);
+    data += chunk;
+    len -= (size_t)chunk;
+  }
+  md5_finish(&md5, digest);
 }
