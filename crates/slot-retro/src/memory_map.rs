@@ -18,10 +18,10 @@ pub struct MemoryMap {
     _names: Vec<CString>,
 }
 
-// SAFETY: the pointers are never dereferenced here. They are handed to code that reads
-// emulator memory only on the thread that runs the core, between core calls (see the
-// module comment), which is what makes reading them sound. Moving the copy between threads
-// does not touch the memory it describes.
+// SAFETY: nothing here dereferences the pointers, so moving the copy between threads touches
+// none of the memory it describes. Reading through them is what needs care, and the code
+// that does so takes the map through an `unsafe fn` whose contract is the rule in the
+// module comment (slot_achievements::Evaluator::apply_map).
 unsafe impl Send for MemoryMap {}
 
 impl MemoryMap {
@@ -67,8 +67,14 @@ impl MemoryMap {
     }
 
     /// Builds a map from descriptors the caller owns, for tests and tools that lay out
-    /// memory themselves. The descriptors' address-space names must be null.
-    pub fn from_descriptors(descriptors: Vec<MemoryDescriptor>) -> MemoryMap {
+    /// memory themselves. Address-space names are dropped.
+    ///
+    /// # Safety
+    ///
+    /// Every descriptor with a non-null `ptr` must describe memory that is readable for
+    /// `len` bytes from `ptr + offset`, and stays so for as long as anything reads through
+    /// the map (see the module comment).
+    pub unsafe fn from_descriptors(descriptors: Vec<MemoryDescriptor>) -> MemoryMap {
         let descriptors = descriptors
             .into_iter()
             .map(|mut d| {

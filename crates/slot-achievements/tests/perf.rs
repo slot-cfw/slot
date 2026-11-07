@@ -13,7 +13,7 @@ use slot_achievements::{console, Evaluator, Frame};
 fn measure(count: u32, frames: u32) -> (Duration, Duration, Duration) {
     let mut mem = Gba::new();
     let mut e = Evaluator::new(console::GAMEBOY_ADVANCE);
-    e.apply_map(&mem.map());
+    unsafe { e.apply_map(&mem.map()) };
     let loaded = e.load(&realistic_gba_set(count));
     assert!(loaded.failed.is_empty(), "{:?}", loaded.failed);
     for _ in 0..30 {
@@ -55,7 +55,7 @@ fn evaluation_cost_per_frame() {
 fn progress_capture_cost() {
     let mut mem = Gba::new();
     let mut e = Evaluator::new(console::GAMEBOY_ADVANCE);
-    e.apply_map(&mem.map());
+    unsafe { e.apply_map(&mem.map()) };
     e.load(&realistic_gba_set(150));
     for frame in 0..100u32 {
         mem.iwram[0x7000] = frame as u8;

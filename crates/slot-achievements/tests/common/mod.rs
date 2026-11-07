@@ -28,11 +28,16 @@ impl Gba {
         }
     }
 
+    /// The boxes never move or shrink, and each test keeps its `Gba` alive for as long as
+    /// its evaluator.
     pub fn map(&mut self) -> MemoryMap {
-        MemoryMap::from_descriptors(vec![
-            descriptor(self.iwram.as_mut_ptr(), 0x0300_0000, IWRAM, 0xFF00_0000),
-            descriptor(self.ewram.as_mut_ptr(), 0x0200_0000, EWRAM, 0xFF00_0000),
-        ])
+        // SAFETY: both descriptors cover exactly their boxed slices.
+        unsafe {
+            MemoryMap::from_descriptors(vec![
+                descriptor(self.iwram.as_mut_ptr(), 0x0300_0000, IWRAM, 0xFF00_0000),
+                descriptor(self.ewram.as_mut_ptr(), 0x0200_0000, EWRAM, 0xFF00_0000),
+            ])
+        }
     }
 
     /// Writes a little-endian 32-bit value into IWRAM.
@@ -72,7 +77,8 @@ impl Gb {
                 ..descriptor(base, 0x10000, 0x6000, 0)
             });
         }
-        MemoryMap::from_descriptors(d)
+        // SAFETY: every descriptor lies inside `wram` (0x8000 bytes) or `hram`.
+        unsafe { MemoryMap::from_descriptors(d) }
     }
 }
 

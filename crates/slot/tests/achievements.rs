@@ -35,6 +35,8 @@ struct Knobs {
     step_back: AtomicU32,
     /// Move work RAM to a new allocation and publish the new map on the next frame.
     republish: AtomicBool,
+    /// The same, but during the next state load (mGBA publishes from unserialize too).
+    republish_on_load: AtomicBool,
     frames: AtomicU64,
     maps_taken: AtomicUsize,
     unserialized: AtomicUsize,
@@ -60,16 +62,20 @@ impl FakeCore {
     }
 
     fn map(&mut self) -> MemoryMap {
-        MemoryMap::from_descriptors(vec![MemoryDescriptor {
-            flags: 0,
-            ptr: self.ram.as_mut_ptr().cast(),
-            offset: 0,
-            start: 0x0300_0000,
-            select: 0xFF00_0000,
-            disconnect: 0,
-            len: RAM,
-            addrspace: std::ptr::null(),
-        }])
+        // SAFETY: the descriptor covers exactly `ram`, a fixed-size box that lives as long
+        // as the core, and is only read on the emulator thread between core calls.
+        unsafe {
+            MemoryMap::from_descriptors(vec![MemoryDescriptor {
+                flags: 0,
+                ptr: self.ram.as_mut_ptr().cast(),
+                offset: 0,
+                start: 0x0300_0000,
+                select: 0xFF00_0000,
+                disconnect: 0,
+                len: RAM,
+                addrspace: std::ptr::null(),
+            }])
+        }
     }
 
     fn get32(&self, at: usize) -> u32 {
@@ -125,6 +131,14 @@ impl RetroCore for FakeCore {
             return Err(CoreError::State("wrong size".into()));
         }
         self.ram.copy_from_slice(data);
+        if self.knobs.republish_on_load.swap(false, Ordering::SeqCst) {
+            // Overwrite the old allocation before freeing it, so a read of stale memory
+            // cannot pass by luck.
+            let moved = self.ram.to_vec().into_boxed_slice();
+            self.ram.fill(0xEE);
+            self.ram = moved;
+            self.pending = Some(self.map());
+        }
         self.knobs.unserialized.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -403,6 +417,30 @@ fn a_republished_map_is_read_at_the_new_memory() {
     r.set(9);
     r.run(5);
     assert_eq!(unlocks(&rx), vec![3]);
+}
+
+#[test]
+fn a_map_republished_by_a_state_load_is_read_at_the_new_memory() {
+    let r = rig();
+    let rx = r.track(&[(4, "0xX000200=9")]);
+    r.run(10);
+    let state = r.emu.snapshot().state().expect("a state");
+    let taken = r.knobs.maps_taken.load(Ordering::SeqCst);
+    r.knobs.republish_on_load.store(true, Ordering::SeqCst);
+    r.emu.snapshot().load(state);
+    r.run(5);
+    assert!(
+        !r.knobs.republish_on_load.load(Ordering::SeqCst),
+        "the load ran"
+    );
+    assert!(r.knobs.maps_taken.load(Ordering::SeqCst) > taken);
+    r.set(9);
+    r.run(5);
+    assert_eq!(
+        unlocks(&rx),
+        vec![4],
+        "tracking follows the map the load published"
+    );
 }
 
 #[test]

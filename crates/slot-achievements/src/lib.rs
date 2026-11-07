@@ -268,7 +268,18 @@ impl Evaluator {
     }
 
     /// Applies a newly published memory map. Every map after the first resets the runtime.
-    pub fn apply_map(&mut self, map: &MemoryMap) -> Mapped {
+    ///
+    /// From here until the next `apply_map`, `clear_map` or drop, [`Evaluator::frame`] and
+    /// [`Evaluator::peek`] read through the map's pointers.
+    ///
+    /// # Safety
+    ///
+    /// The memory the map describes must stay valid for that whole time, and must not be
+    /// written by anything else while this evaluator reads it. For a map a libretro core
+    /// published, that means: call this and every later `frame`/`peek` on the thread that
+    /// runs the core, between core calls, and replace the map (or drop the evaluator)
+    /// before the core publishes a newer one or unloads the game.
+    pub unsafe fn apply_map(&mut self, map: &MemoryMap) -> Mapped {
         self.descriptors.clear();
         self.descriptors.extend_from_slice(map.descriptors());
         let usable = self.build_regions();

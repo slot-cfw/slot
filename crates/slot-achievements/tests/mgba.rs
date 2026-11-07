@@ -1,6 +1,6 @@
-//! The evaluator on the real pinned mGBA core (vendor/mgba_libretro.dylib, built by
+//! The evaluator on the real pinned mGBA core (vendor/mgba_libretro.{dylib,so}, built by
 //! `task core`): memory maps for GBA, GB and GBC, published late, read live.
-//! Skipped when no core has been built.
+//! Skipped, as the other core tests are, when no core has been built.
 //!
 //! The test programs are tiny: each counts frames into work RAM, so what the evaluator
 //! reads can be checked against what the game wrote.
@@ -18,9 +18,13 @@ static CORE: Mutex<()> = Mutex::new(());
 
 fn core() -> Option<(std::sync::MutexGuard<'static, ()>, LibretroCore)> {
     let guard = CORE.lock().unwrap_or_else(|e| e.into_inner());
-    let dylib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/mgba_libretro.dylib");
+    let dylib = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../vendor/mgba_libretro.{}",
+        std::env::consts::DLL_EXTENSION
+    ));
     if !dylib.exists() {
-        eprintln!("no vendored mGBA core, skipping");
+        // As crates/slot/tests do: a checkout without `task core` skips these.
+        eprintln!("no vendored mGBA core at {}, skipping", dylib.display());
         return None;
     }
     let core = LibretroCore::open(&dylib).expect("vendored core is present but would not open");
@@ -137,7 +141,7 @@ fn on_mgba_the_gba_map_arrives_with_the_first_frame_and_reads_live_memory() {
     assert!(core.take_memory_map().is_none(), "taken once");
 
     let mut e = Evaluator::new(console::GAMEBOY_ADVANCE);
-    assert!(e.apply_map(&map).usable);
+    assert!(unsafe { e.apply_map(&map) }.usable);
     run(&mut core, 20);
     let counter = e.peek(0x000100, 4).expect("IWRAM is mapped");
     assert!(
@@ -163,7 +167,7 @@ fn on_mgba_an_achievement_triggers_on_the_frame_its_condition_comes_true() {
         .take_memory_map()
         .expect("no map after the first frame");
     let mut e = Evaluator::new(console::GAMEBOY_ADVANCE);
-    e.apply_map(&map);
+    unsafe { e.apply_map(&map) };
     e.load(&set(console::GAMEBOY_ADVANCE, &[(42, "0xX000100=40")]));
     let mut fired = Vec::new();
     for _ in 0..120 {
@@ -199,7 +203,7 @@ fn on_mgba_the_map_also_arrives_through_unserialize_and_serialize() {
         .take_memory_map()
         .expect("unserialize finishes mGBA's start-up and publishes the map");
     let mut e = Evaluator::new(console::GAMEBOY_ADVANCE);
-    e.apply_map(&map);
+    unsafe { e.apply_map(&map) };
     let restored = e.peek(0x000100, 4).unwrap();
     assert!(restored >= 25, "the restored counter, {restored}");
     drop(e);
@@ -229,7 +233,7 @@ fn on_mgba_the_game_boy_map_reads_work_ram_where_rcheevos_expects_it() {
         .take_memory_map()
         .expect("no map after the first frame");
     let mut e = Evaluator::new(console::GAMEBOY);
-    assert!(e.apply_map(&map).usable);
+    assert!(unsafe { e.apply_map(&map) }.usable);
     run(&mut core, 20);
     let counter = e.peek(0xC100, 1).expect("work RAM bank 0 is mapped");
     assert!(
@@ -251,7 +255,7 @@ fn on_mgba_the_game_boy_color_map_adds_work_ram_banks_2_to_7() {
         .take_memory_map()
         .expect("no map after the first frame");
     let mut e = Evaluator::new(console::GAMEBOY_COLOR);
-    assert!(e.apply_map(&map).usable);
+    assert!(unsafe { e.apply_map(&map) }.usable);
     run(&mut core, 10);
     assert_eq!(e.peek(0xD000, 1), Some(0xA5), "bank 1 at 0xD000");
     assert_eq!(e.peek(0x10000, 1), Some(0x5A), "bank 2 at 0x10000");
@@ -280,5 +284,5 @@ fn on_mgba_a_new_game_drops_the_old_map() {
     run(&mut core, 1);
     let map = core.take_memory_map().expect("the new game's map");
     let mut e = Evaluator::new(console::GAMEBOY);
-    assert!(e.apply_map(&map).usable);
+    assert!(unsafe { e.apply_map(&map) }.usable);
 }

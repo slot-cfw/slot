@@ -600,6 +600,8 @@ impl RetroCore for LibretroCore {
             unsafe { (self.api.load_game)(&info) }
         };
         if !ok {
+            // A map published before the core gave up points into a game that never loaded.
+            self.host.memory_map = None;
             self.rom = Vec::new();
             self.rom_path = None;
             return Err(CoreError::Load(format!("core refused {}", rom.display())));

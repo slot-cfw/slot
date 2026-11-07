@@ -70,7 +70,7 @@ fn c_heap_in_use() -> usize {
 fn evaluating_frames_allocates_nothing() {
     let mut mem = Gba::new();
     let mut e = Evaluator::new(console::GAMEBOY_ADVANCE);
-    e.apply_map(&mem.map());
+    unsafe { e.apply_map(&mem.map()) };
     let set = realistic_gba_set(60);
     let heap_unloaded = c_heap_in_use();
     let loaded = e.load(&set);
@@ -113,7 +113,7 @@ fn evaluating_frames_allocates_nothing() {
 fn a_cancelled_frame_allocates_nothing_either() {
     let mut mem = Gba::new();
     let mut e = Evaluator::new(console::GAMEBOY_ADVANCE);
-    e.apply_map(&mem.map());
+    unsafe { e.apply_map(&mem.map()) };
     e.load(&common::set(
         console::GAMEBOY_ADVANCE,
         &[(1, "I:0xX000200_0xH000000=9")],

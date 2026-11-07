@@ -15,6 +15,10 @@
 //!
 //! The evaluator holds pointers into the core's memory, so it lives only on the emulator
 //! thread and is dropped before the core is unloaded.
+//!
+//! Every map applied here was taken from the core on this thread, between core calls,
+//! straight after the core call that published it, and is replaced the first time the core
+//! publishes another. That is the contract of [`Evaluator::apply_map`].
 
 use std::sync::mpsc::Sender;
 
@@ -45,12 +49,16 @@ struct Tracker {
     // The map the evaluator's table was built from, kept to hand back if tracking stops.
     map: Option<MemoryMap>,
     rewinding: bool,
+    // Consecutive frames cancelled by a read outside the map, so the log says when that
+    // starts and stops rather than once a frame.
+    cancelled: u64,
 }
 
 impl Tracker {
     fn take_map(&mut self, core: &mut dyn RetroCore) {
         if let Some(map) = core.take_memory_map() {
-            let mapped = self.eval.apply_map(&map);
+            // SAFETY: see the module comment; this map was just published by `core`.
+            let mapped = unsafe { self.eval.apply_map(&map) };
             if mapped.reset {
                 eprintln!(
                     "slot: achievements: the core published a new memory map; tracking reset"
@@ -98,13 +106,14 @@ impl Achievements {
             events: plan.events,
             map: None,
             rewinding: false,
+            cancelled: 0,
         };
-        match core.take_memory_map().or_else(|| self.parked.take()) {
-            Some(map) => {
-                tracker.eval.apply_map(&map);
-                tracker.map = Some(map);
-            }
-            None => self.parked = None,
+        // A parked map is the newest the core has published unless it has published
+        // another since, and the game has not changed (one game per emulator thread).
+        if let Some(map) = core.take_memory_map().or_else(|| self.parked.take()) {
+            // SAFETY: see the module comment.
+            unsafe { tracker.eval.apply_map(&map) };
+            tracker.map = Some(map);
         }
         let loaded = tracker.eval.load(&plan.set);
         eprintln!(
@@ -130,17 +139,28 @@ impl Achievements {
             return;
         };
         t.take_map(core);
-        match t.eval.frame() {
-            Frame::Evaluated(n) if n > 0 => {
+        let frame = t.eval.frame();
+        if frame == Frame::Cancelled {
+            if t.cancelled == 0 {
+                eprintln!("slot: achievements: a read fell outside the memory map; frames ignored and tracking reset until it does not");
+            }
+            t.cancelled += 1;
+            return;
+        }
+        if t.cancelled > 0 {
+            eprintln!(
+                "slot: achievements: reads back inside the memory map after {} ignored frames",
+                t.cancelled
+            );
+            t.cancelled = 0;
+        }
+        if let Frame::Evaluated(n) = frame {
+            if n > 0 {
                 for &id in t.eval.triggered() {
                     eprintln!("slot: achievements: {id} unlocked");
                     let _ = t.events.send(RaEvent::Unlocked(id));
                 }
             }
-            Frame::Cancelled => {
-                eprintln!("slot: achievements: a read fell outside the memory map; frame ignored, tracking reset");
-            }
-            _ => {}
         }
     }
 
