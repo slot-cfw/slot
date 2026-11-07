@@ -134,6 +134,11 @@ impl Ra {
             clock(e);
             w.poke();
         });
+        // Started while Wi-Fi was already connected: no connected event will come for
+        // this connection, so act as if one had.
+        if NetLink(jobs.clone()).connected() {
+            self.worker.handle().connected();
+        }
     }
 
     pub fn store(&self) -> StoreHandle {
@@ -150,11 +155,14 @@ impl Ra {
         self.game += 1;
         self.game_hash = None;
         let (id, store, tx) = (self.game, self.store.handle(), self.ready_tx.clone());
-        let _ = std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name("slot-ra-prepare".into())
             .spawn(move || {
                 let _ = tx.send((id, session::prepare(&store, console_id, &rom)));
-            });
+            })
+        {
+            eprintln!("slot: achievements: could not prepare the game ({e}); not tracked");
+        }
     }
 
     /// The game was ejected: nothing more is tracked for it.

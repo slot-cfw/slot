@@ -1,8 +1,9 @@
 //! Game hashes and MD5, from rcheevos' own `rhash` (D1).
 //!
 //! For GB, GBC and GBA the RetroAchievements game hash is the MD5 of the whole ROM file
-//! (`rc_hash_whole_file`, which reads it in 64 KB pieces). Only ever called on the RA store
-//! thread: rhash keeps global reader state.
+//! (`rc_hash_whole_file`, which reads it in 64 KB pieces). rhash keeps global reader
+//! state, so one hash runs at a time (a lock here). Never called on the RA store, game or
+//! emulator threads: a 32 MB ROM takes a moment.
 
 use std::ffi::{c_char, c_int, CString};
 use std::path::Path;
@@ -17,6 +18,8 @@ extern "C" {
 pub fn rom_hash(console_id: u32, path: &Path) -> Result<String, String> {
     let c = CString::new(path.as_os_str().as_encoded_bytes())
         .map_err(|_| "the path contains a nul".to_string())?;
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let mut out = [0 as c_char; 33];
     // SAFETY: `out` has the 33 bytes rhash writes (32 hex digits and a nul); `c` is a valid
     // C string for the call.

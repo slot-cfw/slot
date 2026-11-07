@@ -10,6 +10,7 @@
 //!   runs into its deadline (or is frozen and fails after wake) and is retried later.
 //! - Every unlock stays in the ledger (owned by the RA store) until the server settles it.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -28,6 +29,15 @@ pub const RETRY_CEILING: Duration = Duration::from_secs(15 * 60);
 /// How long after connecting earlier-boot unlocks wait for network time before treating it
 /// as not answering (slot-net asks it within seconds of connecting).
 pub const NET_TIME_WAIT: Duration = Duration::from_secs(60);
+
+/// Errors for requests that were never sent: no back-off, no failed attempt recorded.
+const OFFLINE: &str = "Wi-Fi is not connected";
+const HOLD: &str = "waiting for network time";
+const INTERRUPTED: &str = "interrupted";
+
+fn not_sent(e: &str) -> bool {
+    e == OFFLINE || e == HOLD || e == INTERRUPTED
+}
 
 /// Sends one request. The real one is slot-net's HTTPS client; tests use a fake server or
 /// a script.
@@ -79,6 +89,9 @@ enum Cmd {
 #[derive(Clone)]
 pub struct WorkerHandle {
     tx: Sender<Cmd>,
+    /// Set by Stop, Log In and Log Out: the worker stops before its next request, so a
+    /// round of submissions never holds them up (or sends with an old token).
+    interrupt: Arc<AtomicBool>,
     status: Arc<Mutex<NetStatus>>,
 }
 
@@ -105,6 +118,7 @@ impl WorkerHandle {
 
     /// Log In with a password: sent once over TLS, never kept.
     pub fn log_in(&self, user: &str, password: String) {
+        self.interrupt.store(true, Ordering::SeqCst);
         let _ = self.tx.send(Cmd::LogIn {
             user: user.to_string(),
             password,
@@ -112,6 +126,7 @@ impl WorkerHandle {
     }
 
     pub fn log_out(&self) {
+        self.interrupt.store(true, Ordering::SeqCst);
         let _ = self.tx.send(Cmd::LogOut);
     }
 
@@ -134,8 +149,10 @@ impl Worker {
     ) -> std::io::Result<Worker> {
         let (tx, rx) = mpsc::channel();
         let status = Arc::new(Mutex::new(NetStatus::default()));
+        let interrupt = Arc::new(AtomicBool::new(false));
         let handle = WorkerHandle {
             tx,
+            interrupt: interrupt.clone(),
             status: status.clone(),
         };
         let poke = handle.clone();
@@ -146,6 +163,7 @@ impl Worker {
             link: Box::new(link),
             events,
             status,
+            interrupt,
             renewed: false,
             pause: None,
             retry_at: None,
@@ -170,9 +188,11 @@ impl Worker {
 }
 
 impl Drop for Worker {
-    /// Waits for a request in flight to finish (at most its 20 s deadline). Only called
-    /// when RetroAchievements is turned off, never on the sleep or power-off paths.
+    /// Stops before the next request and waits for one in flight to finish (at most its
+    /// 20 s deadline). Only for turning RetroAchievements off, never on the sleep,
+    /// power-off or exit paths (Phase 5 must keep it so).
     fn drop(&mut self) {
+        self.handle.interrupt.store(true, Ordering::SeqCst);
         let _ = self.handle.tx.send(Cmd::Stop);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
@@ -181,6 +201,7 @@ impl Drop for Worker {
 }
 
 struct State {
+    interrupt: Arc<AtomicBool>,
     store: StoreHandle,
     transport: Box<dyn Transport>,
     link: Box<dyn Link>,
@@ -200,8 +221,9 @@ struct State {
     skip_after: Option<u32>,
 }
 
-/// Overwrites a password before it is dropped (best effort: the request it went into is
-/// dropped straight after sending).
+/// Overwrites the password's own buffer before it is dropped. Best effort only: copies
+/// made on the way (the C string for rcheevos, its request buffer, the request text) are
+/// freed without being overwritten, straight after the one request.
 fn wipe(mut s: String) {
     // SAFETY: zero bytes are valid UTF-8.
     unsafe { s.as_bytes_mut().fill(0) };
@@ -228,6 +250,8 @@ impl State {
                 }
                 next = rx.try_recv().ok();
             }
+            // Everything that asked for an interruption has been applied.
+            self.interrupt.store(false, Ordering::SeqCst);
             self.work();
             self.publish();
         }
@@ -255,6 +279,8 @@ impl State {
     }
 
     fn apply(&mut self, cmd: Cmd) -> bool {
+        // The command that asked for the interruption is being applied now.
+        self.interrupt.store(false, Ordering::SeqCst);
         match cmd {
             Cmd::Connected => {
                 // A new connection: the back-off and a paused 403 start over.
@@ -301,14 +327,17 @@ impl State {
     }
 
     fn send(&mut self, call: &Call) -> Result<Reply, String> {
+        if self.interrupt.load(Ordering::SeqCst) {
+            return Err(INTERRUPTED.into());
+        }
         if !self.link.connected() {
-            return Err("Wi-Fi is not connected".into());
+            return Err(OFFLINE.into());
         }
         let Some(time) = self.clock() else {
             if let Ok(mut s) = self.status.lock() {
                 s.waiting_for_time = true;
             }
-            return Err("waiting for network time".into());
+            return Err(HOLD.into());
         };
         if let Ok(mut s) = self.status.lock() {
             s.waiting_for_time = false;
@@ -321,8 +350,9 @@ impl State {
     }
 
     fn failed(&mut self, why: String) {
-        if why == "Wi-Fi is not connected" || why == "waiting for network time" {
-            // Not a failure to back off from: the next connection or clock event wakes us.
+        if not_sent(&why) {
+            // Not a failure to back off from: the next connection, clock event or command
+            // wakes us.
             return;
         }
         eprintln!(
@@ -356,9 +386,8 @@ impl State {
             Err(e) => Err(e),
         };
         let event = match reply {
-            Err(e) if e == "Wi-Fi is not connected" => {
-                Event::LoginFailed("Connect to Wi-Fi to log in".into())
-            }
+            Err(e) if e == OFFLINE => Event::LoginFailed("Connect to Wi-Fi to log in".into()),
+            Err(e) if e == HOLD => Event::LoginFailed("Waiting for network time".into()),
             Err(_) => Event::LoginFailed("Could not reach RetroAchievements".into()),
             Ok(reply) => {
                 let answer = api::parse_login(&reply);
@@ -411,11 +440,15 @@ impl State {
         let account = self.store.account().unwrap_or(account);
         while let Some((hash, have_cache)) = self.games.first().cloned() {
             if !self.fetch_game(&account, &hash, have_cache) {
-                return;
+                // Kept for later; unlocks are still sent (a failing definitions request
+                // never holds them back).
+                break;
             }
             self.games.remove(0);
         }
-        self.submit(&account);
+        if self.pause.is_none() {
+            self.submit(&account);
+        }
     }
 
     /// D8: the first connection each boot logs in with the token, renewing it.
@@ -488,8 +521,7 @@ impl State {
             }
         };
         self.succeeded();
-        self.store
-            .write_cache(&game_cache(hash), reply.body.clone());
+        self.store.write_cache(&game_cache(hash), &reply.body);
         let published: Vec<u32> = game
             .achievements
             .iter()
@@ -510,7 +542,7 @@ impl State {
                 match api::classify(&verdict) {
                     Outcome::Ok => {
                         self.store
-                            .write_cache(&unlocks_cache(&account.key(), hash), reply.body);
+                            .write_cache(&unlocks_cache(&account.key(), hash), &reply.body);
                         server_unlocks = ids;
                     }
                     Outcome::Pause(p) => {
@@ -583,8 +615,10 @@ impl State {
             let reply = match self.send(&call) {
                 Ok(r) => r,
                 Err(e) => {
-                    self.store.attempt_failed(&account.user, id, "network");
-                    self.skip_after = Some(id);
+                    if !not_sent(&e) {
+                        self.store.attempt_failed(&account.user, id, "network");
+                        self.skip_after = Some(id);
+                    }
                     self.failed(e);
                     return;
                 }

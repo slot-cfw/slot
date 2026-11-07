@@ -67,12 +67,14 @@ pub struct Entry {
     pub last_error: String,
     /// When this record last changed (system clock), for the 90-day rule.
     pub changed_ms: i64,
+    /// Already moved back from rejected to pending once (architecture 8.2: once only).
+    pub republished: bool,
 }
 
 impl Entry {
     fn record(&self) -> String {
         format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.id,
             self.status.word(),
             self.account,
@@ -83,12 +85,13 @@ impl Entry {
             u8::from(self.time.anchored),
             self.attempts,
             self.last_error,
-            self.changed_ms
+            self.changed_ms,
+            u8::from(self.republished)
         )
     }
 
     fn parse(record: &str) -> Option<Entry> {
-        let f = lines::fields(record, 11)?;
+        let f = lines::fields(record, 12)?;
         let account = f[2];
         let rom_hash = f[3];
         if !super::account::valid_name(account)
@@ -118,6 +121,11 @@ impl Entry {
             attempts: f[8].parse().ok()?,
             last_error: f[9].to_string(),
             changed_ms: f[10].parse().ok()?,
+            republished: match f[11] {
+                "0" => false,
+                "1" => true,
+                _ => return None,
+            },
         })
     }
 }
@@ -221,6 +229,7 @@ impl Ledger {
             attempts: 0,
             last_error: "-".into(),
             changed_ms,
+            republished: false,
         });
         true
     }
@@ -250,10 +259,11 @@ impl Ledger {
         for e in &mut self.entries {
             if e.account == account
                 && e.status == Status::Rejected
-                && e.attempts < 2
+                && !e.republished
                 && ids.contains(&e.id)
             {
                 e.status = Status::Pending;
+                e.republished = true;
                 e.changed_ms = now_ms;
                 n += 1;
             }

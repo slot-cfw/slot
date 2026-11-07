@@ -316,6 +316,8 @@ fn a_wrong_system_clock_with_a_network_measurement_still_connects() {
         server.calls("awardachievement").is_empty(),
         "with only the wrong clock, TLS refuses the certificate"
     );
+    let why = worker.handle().status().last_error.unwrap_or_default();
+    assert!(why.contains("TLS"), "refused by TLS, not held: {why}");
     // Network time answers: the clock is 26 years slow. TLS now gets network time.
     h.clock_event(ClockEvent::Measured {
         offset_ms: real - 946_684_800_000,

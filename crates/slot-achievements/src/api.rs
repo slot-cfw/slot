@@ -612,7 +612,10 @@ pub fn classify_award(v: &Verdict, awarded: u32, id: u32) -> Award {
     if v.http == 422 {
         return Award::Held(code());
     }
-    if v.http == 404 || v.http == 409 || v.result == rc::NOT_FOUND || code_is(v, "not_found") {
+    // Rejected only on the server's own JSON answer: a proxy's or CDN's HTML 404 during
+    // a deploy must never drop an unlock.
+    let json = v.result != rc::INVALID_JSON && v.result != rc::NO_RESPONSE;
+    if json && (code_is(v, "not_found") || v.result == rc::NOT_FOUND || v.http == 409) {
         return Award::Rejected(code());
     }
     if v.http == 403 || v.result == rc::ACCESS_DENIED || code_is(v, "access_denied") {
@@ -624,10 +627,18 @@ pub fn classify_award(v: &Verdict, awarded: u32, id: u32) -> Award {
         // "User already has" also comes back as a success (with a message).
         return Award::Synced;
     }
-    Award::Retry(format!(
+    let what = format!(
         "unexpected answer: HTTP {}, result {}, awarded {awarded}, {:?}",
         v.http, v.result, v.message
-    ))
+    );
+    // Not JSON, or nothing at all (a proxy, a cut-off answer): try again later.
+    if !json {
+        return Award::Retry(what);
+    }
+    // A JSON answer we do not expect (another 4xx, another achievement awarded, a failure
+    // with no known code): kept for investigation like a 422, so one strange record can
+    // never hold back the others or be retried for ever.
+    Award::Held(format!("unexpected_{}", v.http))
 }
 
 /// What any other answer (login, sets, session) means.
@@ -833,10 +844,22 @@ mod tests {
         }
         assert!(matches!(a(200, "not json"), Award::Retry(_)));
         assert!(matches!(a(200, ""), Award::Retry(_)));
+        // A proxy's or CDN's HTML 404 during a deploy never rejects an unlock.
+        assert!(matches!(
+            a(404, "<html><body>404 Not Found</body></html>"),
+            Award::Retry(_)
+        ));
+        assert!(matches!(a(404, ""), Award::Retry(_)));
+        // Unexpected JSON answers are held for investigation, never retried for ever.
         assert!(
-            matches!(a(200, &fake::award_ok(43)), Award::Retry(_)),
+            matches!(a(200, &fake::award_ok(43)), Award::Held(_)),
             "another achievement awarded: not taken as this one"
         );
+        assert!(matches!(a(200, r#"{"Success":false}"#), Award::Held(_)));
+        assert!(matches!(
+            a(410, r#"{"Success":false,"Error":"Gone"}"#),
+            Award::Held(_)
+        ));
     }
 
     #[test]

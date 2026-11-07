@@ -76,6 +76,10 @@ struct ServerState {
     /// Accept the award but lose the answer (the client sees a dropped connection).
     accept_then_drop: HashSet<u32>,
     calls: Vec<Logged>,
+    /// Each request takes this long (a slow server).
+    delay: Duration,
+    /// Answers forced for the next achievement-set requests.
+    sets_answers: Answers,
 }
 
 #[derive(Clone, Default)]
@@ -120,6 +124,8 @@ impl Server {
     fn answer(&self, call: &Call, time: Option<i64>) -> Result<Reply, String> {
         let p = params(call);
         let kind = get(&p, "r").unwrap_or_default();
+        let delay = self.0.lock().unwrap().delay;
+        std::thread::sleep(delay);
         let mut s = self.0.lock().unwrap();
         s.calls.push((kind.clone(), p.clone(), time));
         let user = get(&p, "u").unwrap_or_default().to_lowercase();
@@ -143,6 +149,13 @@ impl Server {
                         "RENEWED"
                     },
                 )),
+            },
+            "achievementsets" if !s.sets_answers.is_empty() => match s.sets_answers.remove(0) {
+                Ok((st, b)) => Ok(Reply {
+                    status: st,
+                    body: b,
+                }),
+                Err(e) => Err(e),
             },
             "achievementsets" => match &s.game {
                 Some(g) => ok(g.clone()),
@@ -840,4 +853,164 @@ fn a_rejected_unlock_goes_back_to_pending_once_when_published_again() {
     let _ = &r.store;
     let _ = &r.worker;
     let _ = &r.notices;
+}
+
+// ---- Review fixes ----
+
+#[test]
+fn a_rejection_after_earlier_failed_attempts_still_goes_back_to_pending_once() {
+    let r = rig("republish2");
+    r.server.with(|s| {
+        s.award_answers.insert(
+            12,
+            vec![
+                Err("timed out".into()),
+                Ok(fake::not_found()),
+                Ok(fake::not_found()),
+            ],
+        );
+    });
+    r.unlock(12);
+    r.connect();
+    r.quiet();
+    r.w.connected();
+    wait("rejected", 5, || r.status_of(12) == Some(Status::Rejected));
+    assert_eq!(
+        r.ledger().get("dean", 12).unwrap().attempts,
+        2,
+        "a timeout, then the 404"
+    );
+    r.server.with(|s| {
+        s.game = Some(fake::game_sets(510, 5, "C", &[fake::def(12, "0xH0=1")]));
+    });
+    r.w.game(ROM, true);
+    wait("sent again", 5, || {
+        r.server.calls("awardachievement").len() == 3
+    });
+    wait("rejected again", 5, || {
+        r.status_of(12) == Some(Status::Rejected)
+    });
+    assert!(r.ledger().get("dean", 12).unwrap().republished);
+    r.w.game(ROM, true);
+    r.quiet();
+    assert_eq!(r.server.calls("awardachievement").len(), 3, "once only");
+}
+
+#[test]
+fn requests_never_sent_do_not_count_as_attempts() {
+    let root = tempdir("notsent");
+    let r = rig_with(
+        &root,
+        FakeTime::new("boot-a", 1_794_000_000_000),
+        Server::default(),
+        Wifi::new(false),
+    );
+    r.h.log_in(Account::new("Dean", "TOKEN").unwrap());
+    r.unlock(1);
+    for _ in 0..5 {
+        r.w.connected();
+        r.w.poke();
+    }
+    r.quiet();
+    assert_eq!(r.ledger().get("dean", 1).unwrap().attempts, 0);
+}
+
+#[test]
+fn an_html_404_from_a_proxy_keeps_the_unlock_pending() {
+    let r = rig("html404");
+    r.server.with(|s| {
+        s.award_answers.insert(
+            1,
+            vec![Ok((404, "<html><body>Not Found</body></html>".into()))],
+        );
+    });
+    r.unlock(1);
+    r.connect();
+    r.quiet();
+    assert_eq!(r.status_of(1), Some(Status::Pending));
+    r.w.connected();
+    wait("synced", 5, || r.status_of(1) == Some(Status::Synced));
+}
+
+#[test]
+fn a_failing_definitions_request_never_holds_back_unlocks() {
+    let r = rig("setsfail");
+    r.server.with(|s| {
+        s.sets_answers = vec![Ok(fake::gateway(503)); 5];
+    });
+    r.unlock(1);
+    r.w.game(ROM, false);
+    r.connect();
+    wait("synced", 5, || r.status_of(1) == Some(Status::Synced));
+    // A JSON failure the server explains with no code: dropped, not retried for ever.
+    r.server.with(|s| {
+        s.sets_answers = vec![Ok((200, r#"{"Success":false,"Error":"Something"}"#.into()))];
+    });
+    r.w.connected();
+    r.quiet();
+    let before = r.server.calls("achievementsets").len();
+    r.w.connected();
+    r.quiet();
+    assert!(r.server.calls("achievementsets").len() <= before + 1);
+}
+
+#[test]
+fn log_out_stops_a_slow_round_before_its_next_request() {
+    let r = rig("interrupt");
+    for id in 1..=20 {
+        r.unlock(id);
+    }
+    r.server.with(|s| s.delay = Duration::from_millis(150));
+    r.connect();
+    wait("started", 5, || {
+        !r.server.calls("awardachievement").is_empty()
+    });
+    let began = Instant::now();
+    r.w.log_out();
+    wait("logged out", 5, || r.h.account().is_none());
+    assert!(
+        began.elapsed() < Duration::from_millis(800),
+        "{:?}",
+        began.elapsed()
+    );
+    let sent = r.server.calls("awardachievement").len();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        r.server.calls("awardachievement").len(),
+        sent,
+        "nothing sent after Log Out"
+    );
+    assert!(sent < 20);
+    let rest = r.ledger();
+    let rest = rest.pending("dean");
+    assert!(rest.len() >= 20 - sent, "the rest kept for later");
+    assert!(
+        rest.iter().all(|e| e.attempts == 0),
+        "the interruption is not counted as a failed attempt"
+    );
+}
+
+#[test]
+fn stopping_the_worker_does_not_wait_for_a_whole_round() {
+    let root = tempdir("stopround");
+    let server = Server::default();
+    let time = FakeTime::new("boot-a", 1_794_000_000_000);
+    let r = rig_with(&root, time, server.clone(), Wifi::new(false));
+    r.h.log_in(Account::new("Dean", "TOKEN").unwrap());
+    for id in 1..=20 {
+        r.unlock(id);
+    }
+    server.with(|s| s.delay = Duration::from_millis(150));
+    r.connect();
+    wait("started", 5, || {
+        !server.calls("awardachievement").is_empty()
+    });
+    let Rig { worker, .. } = r;
+    let began = Instant::now();
+    drop(worker);
+    assert!(
+        began.elapsed() < Duration::from_millis(800),
+        "{:?}",
+        began.elapsed()
+    );
 }

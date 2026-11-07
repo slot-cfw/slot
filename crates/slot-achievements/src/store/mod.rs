@@ -181,14 +181,6 @@ enum Msg {
         account: String,
         ids: Vec<u32>,
     },
-    ReadCache {
-        rel: PathBuf,
-        reply: Sender<Option<String>>,
-    },
-    WriteCache {
-        rel: PathBuf,
-        text: String,
-    },
     NetTime(Sender<clock::NetTime>),
     /// A progress capture is waiting in the shared slot.
     Wake,
@@ -213,6 +205,8 @@ impl Msg {
 }
 
 struct Shared {
+    /// `Config/retroachievements`, for the cache files read and written off this thread.
+    root: PathBuf,
     /// False once the store thread has ended (or panicked): nothing is pending then, and
     /// nothing is offered to it.
     alive: AtomicBool,
@@ -447,18 +441,36 @@ impl StoreHandle {
         });
     }
 
-    /// A cached server answer (`games/<hash>.json`, or an account's unlock list).
+    /// A cached server answer (`games/<hash>.json`, or an account's unlock list). Read on
+    /// the caller's thread, never the store's (it can be 2 MB).
     pub fn read_cache(&self, rel: &Path) -> Option<String> {
-        let rel = rel.to_path_buf();
-        self.ask(|reply| Msg::ReadCache { rel, reply })
+        cache_path(&self.shared.root, rel).and_then(|p| std::fs::read_to_string(p).ok())
     }
 
-    /// Keeps a server answer (written atomically, and only if it changed).
-    pub fn write_cache(&self, rel: &Path, text: String) {
-        self.send(Msg::WriteCache {
-            rel: rel.to_path_buf(),
-            text,
-        });
+    /// Keeps a server answer: written atomically and only if it changed, on the caller's
+    /// thread (the network worker's), so the store is never held up by a 2 MB `fsync`
+    /// while an unlock waits. Only the worker writes caches; a reader sees the old or the
+    /// new file, never a mix.
+    pub fn write_cache(&self, rel: &Path, text: &str) {
+        let Some(path) = cache_path(&self.shared.root, rel) else {
+            eprintln!("slot: achievements: refused a cache path outside the folder");
+            return;
+        };
+        if std::fs::read_to_string(&path).ok().as_deref() == Some(text) {
+            return;
+        }
+        let r = path
+            .parent()
+            .map(std::fs::create_dir_all)
+            .unwrap_or(Ok(()))
+            .and_then(|_| slot_store::atomic_write(&path, text.as_bytes()));
+        if let Err(e) = r {
+            // A cache: not retried; fetched again next time.
+            eprintln!(
+                "slot: achievements: could not write {}: {e}",
+                path.display()
+            );
+        }
     }
 
     /// The time TLS should check certificates against (architecture 10.2).
@@ -475,7 +487,6 @@ impl StoreHandle {
     /// store must stay free to write an unlock at once). Blocks the caller, so never call
     /// it from the game or emulator thread.
     pub fn rom_hash(&self, console_id: u32, path: &Path) -> Result<String, String> {
-        static HASHING: Mutex<()> = Mutex::new(());
         let (size, mtime_ns) = index::stat(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let p = path.to_path_buf();
         if let Some(h) = self.ask(|reply| Msg::IndexLookup {
@@ -486,11 +497,7 @@ impl StoreHandle {
         }) {
             return Ok(h);
         }
-        let hash = {
-            // rhash keeps global reader state: one hash at a time.
-            let _one = HASHING.lock().unwrap_or_else(|e| e.into_inner());
-            crate::hash::rom_hash(console_id, path)?
-        };
+        let hash = crate::hash::rom_hash(console_id, path)?;
         self.send(Msg::IndexRecord {
             path: path.to_path_buf(),
             size,
@@ -613,6 +620,7 @@ impl Store {
         let _ = time::now();
         let (tx, rx) = mpsc::channel();
         let shared = Arc::new(Shared {
+            root: config.root.clone(),
             alive: AtomicBool::new(true),
             queued: AtomicUsize::new(0),
             pending: Mutex::new(0),
@@ -692,6 +700,7 @@ struct Worker {
     /// Server answers that arrived while the ledger could not be read; applied once it
     /// reads.
     deferred_settles: Vec<(String, u32, Status, String, i64)>,
+    deferred_republished: Vec<(String, Vec<u32>)>,
 }
 
 /// Returns false if the damaged file could not be kept aside (so it must not be written
@@ -929,6 +938,7 @@ impl Worker {
             ledger_blocked: l.blocked,
             clock_blocked: c.blocked,
             deferred_settles: Vec::new(),
+            deferred_republished: Vec::new(),
         };
         w.flush();
         w.publish();
@@ -961,6 +971,9 @@ impl Worker {
         self.unannounced.retain(|k| new.contains(k));
         for (account, id, status, error, at) in std::mem::take(&mut self.deferred_settles) {
             on_card.settle(&account, id, status, &error, at);
+        }
+        for (account, ids) in std::mem::take(&mut self.deferred_republished) {
+            on_card.republished(&account, &ids, now_ms);
         }
         self.ledger = on_card;
         self.ledger_file = l.tracked;
@@ -1188,37 +1201,17 @@ impl Worker {
                 }
             }
             Msg::Republished { account, ids } => {
-                if let (Some(k), false) = (account::key(&account), self.ledger_blocked) {
-                    let now = self.time.now();
-                    if self.ledger.republished(&k, &ids, now.wall_ms) > 0 {
-                        self.ledger_dirty = true;
-                    }
-                }
-            }
-            Msg::ReadCache { rel, reply } => {
-                let text =
-                    cache_path(&self.root, &rel).and_then(|p| std::fs::read_to_string(p).ok());
-                let _ = reply.send(text);
-            }
-            Msg::WriteCache { rel, text } => match cache_path(&self.root, &rel) {
-                Some(path) => {
-                    if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
-                        let r = path
-                            .parent()
-                            .map(std::fs::create_dir_all)
-                            .unwrap_or(Ok(()))
-                            .and_then(|_| slot_store::atomic_write(&path, text.as_bytes()));
-                        if let Err(e) = r {
-                            // A cache: not retried; fetched again next time.
-                            eprintln!(
-                                "slot: achievements: could not write {}: {e}",
-                                path.display()
-                            );
+                if let Some(k) = account::key(&account) {
+                    if self.ledger_blocked {
+                        self.deferred_republished.push((k, ids));
+                    } else {
+                        let now = self.time.now();
+                        if self.ledger.republished(&k, &ids, now.wall_ms) > 0 {
+                            self.ledger_dirty = true;
                         }
                     }
                 }
-                None => eprintln!("slot: achievements: refused a cache path outside the folder"),
-            },
+            }
             Msg::NetTime(reply) => {
                 let now = self.time.now();
                 let t = if self.clock_blocked {

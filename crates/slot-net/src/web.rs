@@ -114,16 +114,35 @@ impl Site {
         Ok(Arc::new(config))
     }
 
+    /// The server's addresses. The lookup runs on a helper thread so the request can stop
+    /// waiting at its deadline (`getaddrinfo` has no time limit of its own); a lookup still
+    /// running then is left to finish on its own and its answer dropped.
+    fn resolve(&self, deadline: Instant) -> Result<Vec<SocketAddr>, Error> {
+        if let Some(a) = self.resolve_to {
+            return Ok(vec![a]);
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (host, port) = (self.host.clone(), self.port);
+        std::thread::Builder::new()
+            .name("slot-dns".into())
+            .spawn(move || {
+                let r = (host.as_str(), port)
+                    .to_socket_addrs()
+                    .map(|a| a.collect::<Vec<_>>());
+                let _ = tx.send(r);
+            })
+            .map_err(|e| Error::Unreachable(format!("DNS: {e}")))?;
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(Ok(addrs)) => Ok(addrs),
+            Ok(Err(e)) => Err(Error::Unreachable(format!("DNS: {e}"))),
+            Err(_) => Err(Error::Timeout),
+        }
+    }
+
     fn connect(&self, deadline: Instant) -> Result<TcpStream, Error> {
-        let addrs: Vec<SocketAddr> = match self.resolve_to {
-            Some(a) => vec![a],
-            None => (self.host.as_str(), self.port)
-                .to_socket_addrs()
-                .map_err(|e| Error::Unreachable(format!("DNS: {e}")))?
-                .collect(),
-        };
         let mut last = Error::Unreachable("no address".into());
-        for addr in addrs {
+        for addr in self.resolve(deadline)? {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Err(Error::Timeout);
@@ -141,32 +160,31 @@ impl Site {
     }
 
     /// One request to `path_and_query` (starting with `/`). With `body`, a POST of that
-    /// content type. `clock` gives the time certificates are checked against.
+    /// content type. `clock` gives the time certificates are checked against. The whole
+    /// request, the name lookup, connection and TLS handshake included, ends by
+    /// `total_limit`.
     pub fn request(
         &self,
         path_and_query: &str,
         body: Option<(&str, &str)>,
         clock: Clock,
     ) -> Result<Response, Error> {
-        let began = Instant::now();
-        let deadline = began + self.total_limit;
+        let deadline = Instant::now() + self.total_limit;
         let config = self.config(clock)?;
         let name = ServerName::try_from(self.host.clone())
             .map_err(|e| Error::Protocol(format!("host name: {e}")))?;
         let conn =
             rustls::ClientConnection::new(config, name).map_err(|e| Error::Tls(e.to_string()))?;
-        let tcp = self.connect(deadline)?;
-        let mut tls = rustls::StreamOwned::new(conn, tcp);
-        let req = self.build(path_and_query, body);
-        let raw = {
-            let mut guard = Deadline {
-                tls: &mut tls,
-                deadline,
-                io_limit: self.io_limit,
-            };
-            guard.write_all(req.as_bytes())?;
-            guard.read_all(self.max_response)?
+        let sock = Bounded {
+            tcp: self.connect(deadline)?,
+            deadline,
+            io_limit: self.io_limit,
         };
+        let mut tls = rustls::StreamOwned::new(conn, sock);
+        let req = self.build(path_and_query, body);
+        tls.write_all(req.as_bytes()).map_err(map_io)?;
+        tls.flush().map_err(map_io)?;
+        let raw = read_response_capped(&mut tls, self.max_response)?;
         parse_response(&raw)
     }
 
@@ -195,53 +213,45 @@ impl Site {
     }
 }
 
-/// Reads and writes with each socket timeout shortened to what is left of the total
-/// deadline, so the whole request can never take longer.
-struct Deadline<'a> {
-    tls: &'a mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
+/// The socket under TLS, with every read and write given only what is left of the total
+/// deadline (so a server that answers a byte at a time, or a lossy link during the
+/// handshake, cannot stretch the request).
+struct Bounded {
+    tcp: TcpStream,
     deadline: Instant,
     io_limit: Duration,
 }
 
-impl Deadline<'_> {
-    fn arm(&mut self) -> Result<(), Error> {
+impl Bounded {
+    fn arm(&self) -> std::io::Result<()> {
         let left = self.deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Err(Error::Timeout);
-        }
-        let t = Some(self.io_limit.min(left));
-        let _ = self.tls.sock.set_read_timeout(t);
-        let _ = self.tls.sock.set_write_timeout(t);
-        Ok(())
-    }
-
-    fn write_all(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        self.arm()?;
-        self.tls.write_all(bytes).map_err(map_io)?;
-        self.arm()?;
-        self.tls.flush().map_err(map_io)
-    }
-
-    fn read_all(&mut self, cap: usize) -> Result<Vec<u8>, Error> {
-        self.arm()?;
-        let mut reader = Timed { inner: self };
-        read_response_capped(&mut reader, cap)
-    }
-}
-
-struct Timed<'a, 'b> {
-    inner: &'a mut Deadline<'b>,
-}
-
-impl std::io::Read for Timed<'_, '_> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.inner.arm().is_err() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "total deadline",
             ));
         }
-        self.inner.tls.read(buf)
+        let t = Some(self.io_limit.min(left));
+        self.tcp.set_read_timeout(t)?;
+        self.tcp.set_write_timeout(t)
+    }
+}
+
+impl std::io::Read for Bounded {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.arm()?;
+        self.tcp.read(buf)
+    }
+}
+
+impl Write for Bounded {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.arm()?;
+        self.tcp.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.tcp.flush()
     }
 }
 
@@ -344,6 +354,56 @@ mod tests {
         assert!(matches!(s.request("/", None, now()), Err(Error::Timeout)));
         assert!(
             began.elapsed() < Duration::from_millis(900),
+            "{:?}",
+            began.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_server_that_stalls_the_handshake_or_drips_is_cut_off_at_the_deadline() {
+        use std::io::Write as _;
+        // Accepts the connection and never speaks TLS.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = silent.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let _held: Vec<_> = silent.incoming().take(1).collect();
+            std::thread::sleep(Duration::from_secs(5));
+        });
+        let mut s = Site::new(HOST, "t");
+        s.roots = Roots::Pem(CA_PEM.to_vec());
+        s.resolve_to = Some(addr);
+        s.total_limit = Duration::from_millis(600);
+        let began = Instant::now();
+        assert!(s.request("/", None, now()).is_err());
+        assert!(
+            began.elapsed() < Duration::from_millis(1000),
+            "{:?}",
+            began.elapsed()
+        );
+
+        // Speaks, but a byte every 100 ms: each read is short, the total is not.
+        let drip = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = drip.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut c, _)) = drip.accept() {
+                // A valid TLS record header announcing 16 KB of handshake, then its
+                // contents a byte at a time: the client waits for the whole record.
+                if c.write_all(&[0x16, 0x03, 0x03, 0x40, 0x00]).is_err() {
+                    return;
+                }
+                for _ in 0..100 {
+                    if c.write_all(&[0x00]).is_err() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+        s.resolve_to = Some(addr);
+        let began = Instant::now();
+        assert!(s.request("/", None, now()).is_err());
+        assert!(
+            began.elapsed() < Duration::from_millis(1000),
             "{:?}",
             began.elapsed()
         );
