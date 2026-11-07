@@ -21,31 +21,66 @@
 //! publishes another. That is the contract of [`Evaluator::apply_map`].
 
 use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
 
+use slot_achievements::store::time::{self, Stamp};
+use slot_achievements::store::UnlockSink;
 use slot_achievements::{Evaluator, Frame, GameSet};
 use slot_retro::{MemoryMap, RetroCore};
 
-/// What the emulator thread reports. Phase 1 only produces these; later phases store and
-/// send unlocks.
+/// What the emulator thread reports.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RaEvent {
-    /// An achievement's trigger fired. It is already deactivated and cannot fire again.
-    Unlocked(u32),
+    /// An achievement's trigger fired, stamped in the frame it fired. It is already
+    /// deactivated and cannot fire again.
+    Unlocked { id: u32, at: Stamp },
     /// An achievement reads memory the core does not map, so it will never be tracked.
     Disabled(u32),
     /// rcheevos could not parse an achievement's definition.
     Unparsed(u32, String),
 }
 
+/// Where the emulator thread's events go. Never blocks.
+pub trait RaSink: Send {
+    /// Takes the event, or hands an unlock back when it cannot take it now (the RA store's
+    /// queue is full); it is then kept and offered again on the next frame.
+    fn offer(&self, event: RaEvent) -> Result<(), RaEvent>;
+}
+
+impl RaSink for Sender<RaEvent> {
+    fn offer(&self, event: RaEvent) -> Result<(), RaEvent> {
+        let _ = self.send(event);
+        Ok(())
+    }
+}
+
+/// Unlocks go to the RA store (Phase 2); the other events are only logged.
+impl RaSink for UnlockSink {
+    fn offer(&self, event: RaEvent) -> Result<(), RaEvent> {
+        match event {
+            RaEvent::Unlocked { id, at } => {
+                UnlockSink::offer(self, id, at).map_err(|at| RaEvent::Unlocked { id, at })
+            }
+            RaEvent::Disabled(_) | RaEvent::Unparsed(..) => Ok(()),
+        }
+    }
+}
+
 /// Turns tracking on for the seated game.
 pub struct AchievementPlan {
     pub set: GameSet,
-    pub events: Sender<RaEvent>,
+    pub events: Box<dyn RaSink>,
 }
+
+/// How long stopping may spend handing over unlocks the store has not taken yet.
+const STOP_HANDOVER: Duration = Duration::from_millis(100);
 
 struct Tracker {
     eval: Evaluator,
-    events: Sender<RaEvent>,
+    events: Box<dyn RaSink>,
+    // Unlocks the sink handed back, offered again each frame. Sized for every achievement
+    // in the set, so a frame never allocates for it.
+    backlog: Vec<RaEvent>,
     // The map the evaluator's table was built from, kept to hand back if tracking stops.
     map: Option<MemoryMap>,
     rewinding: bool,
@@ -65,9 +100,26 @@ impl Tracker {
                 );
             }
             for id in mapped.disabled {
-                let _ = self.events.send(RaEvent::Disabled(id));
+                let _ = self.events.offer(RaEvent::Disabled(id));
             }
             self.map = Some(map);
+        }
+    }
+
+    fn deliver(&mut self, event: RaEvent) {
+        if let Err(back) = self.events.offer(event) {
+            self.backlog.push(back);
+        }
+    }
+
+    /// Offers anything handed back earlier again, oldest first, stopping at the first
+    /// refusal so the order is kept.
+    fn retry_backlog(&mut self) {
+        while let Some(event) = self.backlog.first().cloned() {
+            if self.events.offer(event).is_err() {
+                return;
+            }
+            self.backlog.remove(0);
         }
     }
 }
@@ -104,6 +156,7 @@ impl Achievements {
         let mut tracker = Tracker {
             eval: Evaluator::new(plan.set.console_id),
             events: plan.events,
+            backlog: Vec::with_capacity(plan.set.achievements.len()),
             map: None,
             rewinding: false,
             cancelled: 0,
@@ -125,10 +178,10 @@ impl Achievements {
             loaded.disabled.len()
         );
         for (id, why) in loaded.failed {
-            let _ = tracker.events.send(RaEvent::Unparsed(id, why));
+            let _ = tracker.events.offer(RaEvent::Unparsed(id, why));
         }
         for id in loaded.disabled {
-            let _ = tracker.events.send(RaEvent::Disabled(id));
+            let _ = tracker.events.offer(RaEvent::Disabled(id));
         }
         self.tracker = Some(tracker);
     }
@@ -138,6 +191,9 @@ impl Achievements {
         let Some(t) = self.tracker.as_mut() else {
             return;
         };
+        if !t.backlog.is_empty() {
+            t.retry_backlog();
+        }
         t.take_map(core);
         let frame = t.eval.frame();
         if frame == Frame::Cancelled {
@@ -156,9 +212,11 @@ impl Achievements {
         }
         if let Frame::Evaluated(n) = frame {
             if n > 0 {
-                for &id in t.eval.triggered() {
+                let at = time::now();
+                for i in 0..n {
+                    let id = t.eval.triggered()[i];
                     eprintln!("slot: achievements: {id} unlocked");
-                    let _ = t.events.send(RaEvent::Unlocked(id));
+                    t.deliver(RaEvent::Unlocked { id, at: at.clone() });
                 }
             }
         }
@@ -205,8 +263,37 @@ impl Achievements {
     /// Stops tracking, keeping the map for a later plan. Called before the core is
     /// unloaded, so no pointer into its memory outlives it.
     pub(crate) fn stop(&mut self) {
-        if let Some(t) = self.tracker.take() {
+        if let Some(mut t) = self.tracker.take() {
+            // Unlocks the store has not taken yet are handed over now (bounded; this is
+            // not a frame). They keep the time they were earned.
+            let deadline = Instant::now() + STOP_HANDOVER;
+            while !t.backlog.is_empty() && Instant::now() < deadline {
+                t.retry_backlog();
+                if !t.backlog.is_empty() {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+            for e in &t.backlog {
+                eprintln!("slot: achievements: LOST {e:?}: the RA store did not take it in time");
+            }
             self.parked = t.map;
         }
+    }
+}
+
+/// The listener for `NetJobs::set_on_time`: network-time measurements and clock steps go
+/// into the RA store's clock history, stamped as they happen. Never blocks.
+pub fn clock_listener(
+    store: slot_achievements::store::StoreHandle,
+) -> impl Fn(slot_net::TimeEvent) + Send + Sync + 'static {
+    use slot_achievements::store::clock::ClockEvent;
+    move |event| {
+        let event = match event {
+            slot_net::TimeEvent::Measured { offset_s } => ClockEvent::Measured {
+                offset_ms: (offset_s * 1000.0).round() as i64,
+            },
+            slot_net::TimeEvent::Stepped { rtc_written } => ClockEvent::Stepped { rtc_written },
+        };
+        store.clock_event(event);
     }
 }

@@ -374,6 +374,13 @@ pub struct App {
     battery_warned: Option<u8>,
     last_led: Option<LedState>,
     powering_off: bool,
+    /// The shutdown under way was chosen by the player (Power Off or Restart). Only these
+    /// wait for pending RetroAchievements writes (D5); low battery and timed shutdown never
+    /// do.
+    manual_shutdown: bool,
+    /// The RetroAchievements store, while RetroAchievements is On (0.6.0). `None` (Off)
+    /// means no RA thread, file or wait anywhere.
+    ra_store: Option<slot_achievements::store::StoreHandle>,
     /// The lid as last reported. While it is shut, POWER never wakes the screen.
     lid_shut: bool,
     /// Hardware sleep for the doze under way (software standby when not available).
@@ -568,6 +575,8 @@ impl App {
             battery_warned: None,
             last_led: None,
             powering_off: false,
+            manual_shutdown: false,
+            ra_store: None,
             lid_shut: false,
             sleep: SleepPlan::default(),
             power_quiet_until: 0,
@@ -903,6 +912,10 @@ impl App {
         let utc = self.utc_secs() + moved;
         if let Some(power) = &mut self.power {
             power.set_clock(utc);
+        }
+        if let Some(ra) = &self.ra_store {
+            // Breaks the RA clock history: no network measurement reaches across it.
+            ra.clock_event(slot_achievements::store::clock::ClockEvent::Manual);
         }
         self.state.utc_offset_min = offset as i16;
         self.state.clock_set = true;
@@ -1554,6 +1567,7 @@ impl App {
 
     pub fn restart(&mut self) {
         self.settle_saves();
+        self.settle_achievements();
         self.net.before_poweroff();
         if let Some(power) = &mut self.power {
             power.restart();
@@ -1666,10 +1680,43 @@ impl App {
 
     pub fn poweroff(&mut self) {
         self.settle_saves();
+        self.settle_achievements();
         self.net.before_poweroff();
         if let Some(power) = &mut self.power {
             power.poweroff();
         }
+    }
+
+    /// D5 (approved 7 Nov): a manual Power Off or Restart waits at most 250 ms for
+    /// RetroAchievements writes still pending (the ledger first). Nothing pending, RA Off,
+    /// low battery and timed shutdown: no wait at all.
+    fn settle_achievements(&mut self) {
+        let Some(ra) = &self.ra_store else {
+            return;
+        };
+        if !self.manual_shutdown || !ra.pending() {
+            return;
+        }
+        let began = std::time::Instant::now();
+        let done = ra.settle_for_poweroff(slot_achievements::store::POWEROFF_WAIT);
+        eprintln!(
+            "slot: achievements: waited {} ms for pending writes ({})",
+            began.elapsed().as_millis(),
+            if done { "written" } else { "NOT all written" }
+        );
+    }
+
+    /// RetroAchievements turned On (`Some`) or Off (Phase 5 decides when).
+    pub fn set_ra_store(&mut self, store: Option<slot_achievements::store::StoreHandle>) {
+        self.ra_store = store;
+    }
+
+    pub fn ra_store(&self) -> Option<&slot_achievements::store::StoreHandle> {
+        self.ra_store.as_ref()
+    }
+
+    pub fn manual_shutdown(&self) -> bool {
+        self.manual_shutdown
     }
 
     pub fn apply(&mut self, action: Action) {
@@ -1872,6 +1919,7 @@ impl App {
                 }
                 self.net_menu = None;
                 self.restarting = true;
+                self.manual_shutdown = true;
                 self.act_at = self.now() + SHUTDOWN_SHOW_MS;
                 self.set_led(LedState::Off);
             }
@@ -2485,8 +2533,10 @@ impl App {
             self.card_check_at = self.now() + CARD_CHECK_MS;
             self.card_read_only = self.power.as_ref().is_some_and(|p| p.card_read_only());
         }
-        let failing =
-            self.card_failing.load(Ordering::Relaxed) || self.card_read_only || self.card_unread;
+        let failing = self.card_failing.load(Ordering::Relaxed)
+            || self.card_read_only
+            || self.card_unread
+            || self.ra_store.as_ref().is_some_and(|ra| ra.failing());
         if failing != self.hud.alarmed() {
             eprintln!(
                 "slot: card: alarm {} (read-only {}, unread {})",
@@ -3562,10 +3612,17 @@ impl App {
                 match PowerChoice::ALL[index] {
                     PowerChoice::Restart => {
                         self.restarting = true;
+                        self.manual_shutdown = true;
                         self.act_at = self.now() + SHUTDOWN_SHOW_MS;
                         self.set_led(LedState::Off);
                     }
-                    PowerChoice::PowerOff => self.begin_power_off(),
+                    PowerChoice::PowerOff => {
+                        // Manual only if this choice started it (not one already under way
+                        // for low battery or the sleep running out).
+                        let already = self.powering_off;
+                        self.begin_power_off();
+                        self.manual_shutdown = !already && self.powering_off;
+                    }
                 }
             }
             _ => {}

@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use slot::achievements::{AchievementPlan, RaEvent};
+use slot::achievements::{AchievementPlan, RaEvent, RaSink};
 use slot::audio::{AudioSink, StubSink};
 use slot::emu::{CoreState, EmuHandle, Speed};
 use slot::persist::Snapshot;
@@ -209,6 +209,11 @@ impl Rig {
 
     fn track(&self, achievements: &[(u32, &str)]) -> Receiver<RaEvent> {
         let (tx, rx) = mpsc::channel();
+        self.track_into(achievements, Box::new(tx));
+        rx
+    }
+
+    fn track_into(&self, achievements: &[(u32, &str)], events: Box<dyn RaSink>) {
         self.emu.set_achievements(Some(AchievementPlan {
             set: GameSet {
                 console_id: console::GAMEBOY_ADVANCE,
@@ -222,11 +227,10 @@ impl Rig {
                     .collect(),
                 unlocked: Vec::new(),
             },
-            events: tx,
+            events,
         }));
         // Commands are applied before the next frame runs.
         self.run(3);
-        rx
     }
 
     fn set(&self, value: u32) {
@@ -248,7 +252,7 @@ fn wait_for(cond: impl Fn() -> bool, secs: u64) -> bool {
 fn unlocks(rx: &Receiver<RaEvent>) -> Vec<u32> {
     rx.try_iter()
         .filter_map(|e| match e {
-            RaEvent::Unlocked(id) => Some(id),
+            RaEvent::Unlocked { id, .. } => Some(id),
             _ => None,
         })
         .collect()
@@ -303,7 +307,8 @@ fn every_frame_counts(speed: Speed) {
 }
 
 fn unlocks_now(rx: &Receiver<RaEvent>) -> bool {
-    rx.try_iter().any(|e| e == RaEvent::Unlocked(9))
+    rx.try_iter()
+        .any(|e| matches!(e, RaEvent::Unlocked { id: 9, .. }))
 }
 
 #[test]
@@ -465,4 +470,140 @@ fn stopping_the_emulator_while_tracking_is_clean() {
     let _rx = r.track(&[(1, "0xX000200=7")]);
     r.run(10);
     drop(r);
+}
+
+/// A sink that refuses unlocks while `full` is set, as the RA store does with a full queue.
+struct Refusing {
+    full: Arc<AtomicBool>,
+    refused: Arc<AtomicUsize>,
+    tx: mpsc::Sender<RaEvent>,
+}
+
+impl RaSink for Refusing {
+    fn offer(&self, event: RaEvent) -> Result<(), RaEvent> {
+        if matches!(event, RaEvent::Unlocked { .. }) && self.full.load(Ordering::SeqCst) {
+            self.refused.fetch_add(1, Ordering::SeqCst);
+            return Err(event);
+        }
+        let _ = self.tx.send(event);
+        Ok(())
+    }
+}
+
+#[test]
+fn an_unlock_refused_by_a_full_queue_is_offered_again_and_keeps_its_time() {
+    let r = rig();
+    let (tx, rx) = mpsc::channel();
+    let full = Arc::new(AtomicBool::new(true));
+    let refused = Arc::new(AtomicUsize::new(0));
+    r.track_into(
+        &[(21, "0xX000200=5"), (22, "0xX000200=5")],
+        Box::new(Refusing {
+            full: full.clone(),
+            refused: refused.clone(),
+            tx,
+        }),
+    );
+    let before = slot_achievements::store::time::now();
+    r.set(5);
+    r.run(20);
+    let fired_by = slot_achievements::store::time::now();
+    assert!(
+        refused.load(Ordering::SeqCst) >= 10,
+        "offered again every frame"
+    );
+    assert!(
+        rx.try_iter().next().is_none(),
+        "nothing got through while full"
+    );
+    std::thread::sleep(Duration::from_millis(50));
+    full.store(false, Ordering::SeqCst);
+    r.run(5);
+    let got: Vec<RaEvent> = rx.try_iter().collect();
+    let ids: Vec<u32> = got
+        .iter()
+        .filter_map(|e| match e {
+            RaEvent::Unlocked { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let mut sorted = ids.clone();
+    sorted.sort();
+    // Both fired in the same frame, so their order is rcheevos' own.
+    assert_eq!(sorted, vec![21, 22], "none lost, none twice");
+    for e in &got {
+        if let RaEvent::Unlocked { at, .. } = e {
+            assert!(
+                at.boot_ms >= before.boot_ms && at.boot_ms <= fired_by.boot_ms,
+                "stamped when it fired, not when it was finally taken"
+            );
+        }
+    }
+}
+
+#[test]
+fn stopping_hands_over_unlocks_still_waiting() {
+    let r = rig();
+    let (tx, rx) = mpsc::channel();
+    let full = Arc::new(AtomicBool::new(true));
+    let refused = Arc::new(AtomicUsize::new(0));
+    r.track_into(
+        &[(31, "0xX000200=6")],
+        Box::new(Refusing {
+            full: full.clone(),
+            refused: refused.clone(),
+            tx,
+        }),
+    );
+    r.set(6);
+    r.run(5);
+    assert!(refused.load(Ordering::SeqCst) >= 1);
+    let f = full.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(20));
+        f.store(false, Ordering::SeqCst);
+    });
+    r.emu.set_achievements(None);
+    assert!(
+        wait_for(|| unlocks(&rx) == vec![31], 2),
+        "handed over at stop"
+    );
+}
+
+#[test]
+fn unlocks_reach_the_ra_store_ledger() {
+    use slot_achievements::store::{Config, Store};
+    let card = std::env::temp_dir().join(format!("slot-ra-emu-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&card);
+    let root = slot_achievements::store::root(&card);
+    let (ntx, notices) = mpsc::channel();
+    let store = Store::spawn(
+        Config {
+            root: root.clone(),
+            at_boot: true,
+            time: Arc::new(slot_achievements::store::time::System),
+        },
+        ntx,
+    )
+    .unwrap();
+    let h = store.handle();
+    let r = rig();
+    r.track_into(
+        &[(41, "0xX000200=8")],
+        Box::new(h.unlock_sink("Dean", "0123456789abcdef0123456789abcdef")),
+    );
+    r.set(8);
+    r.run(5);
+    let n = notices.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        n,
+        slot_achievements::store::Notice::Unlocked {
+            account: "dean".into(),
+            id: 41
+        }
+    );
+    assert_eq!(h.unlocked("dean"), vec![41]);
+    drop(r);
+    drop(store);
+    let _ = std::fs::remove_dir_all(&card);
 }
