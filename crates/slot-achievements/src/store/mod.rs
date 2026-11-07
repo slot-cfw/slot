@@ -19,6 +19,7 @@ pub mod files;
 pub mod index;
 pub mod ledger;
 pub mod lines;
+pub mod progress;
 pub mod time;
 
 use std::collections::HashMap;
@@ -98,13 +99,43 @@ pub struct StoreStatus {
     pub failing: bool,
 }
 
-/// Where a progress capture goes, under the account's folder (Phase 4 fills it in).
+/// Where a progress capture goes, under the account's folder.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ProgressKey {
     pub account: String,
     pub platform: String,
     pub core: String,
     pub stem: String,
+}
+
+/// Partial progress captured with a resume write (architecture 6.3): the rcheevos buffer,
+/// and the exact resume bytes just written, which bind it to that state. The resume bytes
+/// are moved here, never copied; the store fingerprints them on its own thread.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProgressCapture {
+    pub rom_hash: String,
+    pub resume: Vec<u8>,
+    pub progress: Vec<u8>,
+}
+
+impl ProgressCapture {
+    fn binding(&self, account: &str) -> Option<progress::Binding> {
+        Some(progress::Binding::new(
+            &account::key(account)?,
+            &self.rom_hash,
+            &self.resume,
+        ))
+    }
+}
+
+/// What a game start finds for its progress.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProgressFound {
+    /// rcheevos' buffer, bound to exactly this account, ROM and resume state, and whole.
+    Restore(Vec<u8>),
+    /// No progress for this game (and account).
+    Missing,
+    Refused(progress::Refusal),
 }
 
 impl ProgressKey {
@@ -230,7 +261,7 @@ struct Shared {
     pending: Mutex<usize>,
     idle: Condvar,
     failing: AtomicBool,
-    progress: Mutex<HashMap<ProgressKey, Vec<u8>>>,
+    progress: Mutex<HashMap<ProgressKey, ProgressCapture>>,
     status: Mutex<StoreStatus>,
     /// Called (on the store thread; must not block) after unlocks reach the ledger: the
     /// network worker sends them.
@@ -344,18 +375,22 @@ impl StoreHandle {
     /// Offers a progress capture. A newer capture for the same file replaces one still
     /// waiting; with [`PROGRESS_CAP`] files already waiting it is skipped (returns false),
     /// which only means progress resets at the next cold boot.
-    pub fn offer_progress(&self, key: ProgressKey, bytes: Vec<u8>) -> bool {
+    /// Never blocks (a short lock, then a message).
+    pub fn offer_progress(&self, key: ProgressKey, capture: ProgressCapture) -> bool {
+        if !self.shared.alive.load(Ordering::SeqCst) {
+            return false;
+        }
         let Ok(mut slot) = self.shared.progress.lock() else {
             return false;
         };
         if let Some(waiting) = slot.get_mut(&key) {
-            *waiting = bytes;
+            *waiting = capture;
             return true;
         }
         if slot.len() >= PROGRESS_CAP {
             return false;
         }
-        slot.insert(key, bytes);
+        slot.insert(key, capture);
         self.shared.add_pending(1);
         drop(slot);
         let _ = self.tx.send(Msg::Wake);
@@ -454,6 +489,45 @@ impl StoreHandle {
 
     /// A cached server answer (`games/<hash>.json`, or an account's unlock list). Read on
     /// the caller's thread, never the store's (it can be 2 MB).
+    /// The progress to restore for a game starting with `resume`, on the caller's thread
+    /// (the game's preparation, never the game or emulator thread: it fingerprints the
+    /// resume state). A capture still waiting to be written is newer than the file, so it
+    /// is the one checked.
+    pub fn progress_for(&self, key: &ProgressKey, rom_hash: &str, resume: &[u8]) -> ProgressFound {
+        let Some(want_account) = account::key(&key.account) else {
+            return ProgressFound::Missing;
+        };
+        let want = progress::Binding::new(&want_account, rom_hash, resume);
+        let waiting = self
+            .shared
+            .progress
+            .lock()
+            .ok()
+            .and_then(|p| p.get(key).cloned());
+        if let Some(c) = waiting {
+            return match c.binding(&key.account) {
+                Some(b) if b == want && progress::intact(&c.progress) => {
+                    ProgressFound::Restore(c.progress)
+                }
+                Some(b) if b.rom_hash != want.rom_hash => {
+                    ProgressFound::Refused(progress::Refusal::OtherGame)
+                }
+                Some(b) if b == want => ProgressFound::Refused(progress::Refusal::BufferDamaged),
+                _ => ProgressFound::Refused(progress::Refusal::OtherResume),
+            };
+        }
+        let Some(path) = key.path(&self.shared.root) else {
+            return ProgressFound::Missing;
+        };
+        match std::fs::read(&path) {
+            Ok(file) => match progress::check(&file, &want) {
+                Ok(buffer) => ProgressFound::Restore(buffer.to_vec()),
+                Err(why) => ProgressFound::Refused(why),
+            },
+            Err(_) => ProgressFound::Missing,
+        }
+    }
+
     pub fn read_cache(&self, rel: &Path) -> Option<String> {
         cache_path(&self.shared.root, rel).and_then(|p| std::fs::read_to_string(p).ok())
     }
@@ -712,6 +786,9 @@ struct Worker {
     /// reads.
     deferred_settles: Vec<(String, u32, Status, String, i64)>,
     deferred_republished: Vec<(String, Vec<u32>)>,
+    /// The MD5 of each progress file as last written, so an unchanged one is not
+    /// rewritten.
+    progress_written: HashMap<PathBuf, [u8; 16]>,
 }
 
 /// Returns false if the damaged file could not be kept aside (so it must not be written
@@ -851,15 +928,25 @@ pub fn unlocks_cache(account_key: &str, rom_hash: &str) -> PathBuf {
         .join(format!("{rom_hash}.json"))
 }
 
-/// Removes temporary files an interrupted `atomic_write` left (`.<name>.<pid>.<n>.tmp`).
+/// Removes temporary files an interrupted `atomic_write` left (`.<name>.<pid>.<n>.tmp`)
+/// in an earlier process. This process's own are left alone: another thread (the network
+/// worker writing a cache) may be in the middle of one.
 fn sweep_temporaries(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
+    let own = format!(".{}.", std::process::id());
     for e in entries.flatten() {
         let name = e.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with('.') && name.ends_with(".tmp") && e.path().is_file() {
+        let Some(rest) = name.strip_suffix(".tmp") else {
+            continue;
+        };
+        // `.<pid>.<n>` at the end of the rest.
+        let mine = rest
+            .rsplit_once('.')
+            .is_some_and(|(head, _n)| format!("{head}.").ends_with(&own));
+        if name.starts_with('.') && !mine && e.path().is_file() {
             let _ = std::fs::remove_file(e.path());
         }
     }
@@ -950,6 +1037,7 @@ impl Worker {
             clock_blocked: c.blocked,
             deferred_settles: Vec::new(),
             deferred_republished: Vec::new(),
+            progress_written: HashMap::new(),
         };
         w.flush();
         w.publish();
@@ -1337,31 +1425,44 @@ impl Worker {
 
         // Progress last, and only once the ledger is on the card: a progress file must
         // never describe a game past an unlock the ledger does not hold yet.
-        let waiting: Vec<(ProgressKey, Vec<u8>)> = if self.ledger_dirty || self.ledger_blocked {
-            Vec::new()
-        } else {
-            self.shared
-                .progress
-                .lock()
-                .map(|mut p| p.drain().collect())
-                .unwrap_or_default()
-        };
-        for (key, bytes) in waiting {
-            match key.path(&self.root) {
-                Some(path) => {
-                    if let Some(dir) = path.parent() {
-                        let _ = std::fs::create_dir_all(dir);
-                    }
-                    if let Err(e) = slot_store::atomic_write(&path, &bytes) {
-                        // Not retried: the next capture replaces it, and a missing file
-                        // only means progress resets.
-                        eprintln!(
-                            "slot: achievements: could not write {}: {e}",
-                            path.display()
-                        );
+        let waiting: Vec<(ProgressKey, ProgressCapture)> =
+            if self.ledger_dirty || self.ledger_blocked {
+                Vec::new()
+            } else {
+                self.shared
+                    .progress
+                    .lock()
+                    .map(|mut p| p.drain().collect())
+                    .unwrap_or_default()
+            };
+        for (key, capture) in waiting {
+            match (key.path(&self.root), capture.binding(&key.account)) {
+                (Some(path), Some(binding)) => {
+                    let file = progress::encode(&binding, &capture.progress);
+                    drop(capture);
+                    // A paused game autosaves the same progress again: not rewritten.
+                    let digest = crate::hash::md5(&file);
+                    if self.progress_written.get(&path) != Some(&digest) {
+                        if let Some(dir) = path.parent() {
+                            let _ = std::fs::create_dir_all(dir);
+                        }
+                        match slot_store::atomic_write(&path, &file) {
+                            Ok(()) => {
+                                self.progress_written.insert(path, digest);
+                            }
+                            Err(e) => {
+                                // Not retried: the next capture replaces it, and a stale
+                                // or missing file only means progress resets.
+                                self.progress_written.remove(&path);
+                                eprintln!(
+                                    "slot: achievements: could not write {}: {e}",
+                                    path.display()
+                                );
+                            }
+                        }
                     }
                 }
-                None => eprintln!("slot: achievements: progress for an unusable name; skipped"),
+                _ => eprintln!("slot: achievements: progress for an unusable name; skipped"),
             }
             self.shared.done_pending(1);
         }

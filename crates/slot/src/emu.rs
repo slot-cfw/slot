@@ -5,7 +5,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::achievements::{AchievementPlan, Achievements};
+use crate::achievements::{AchievementPlan, Achievements, CapturedProgress};
 use crate::cable::{self, Cable};
 use slot_retro::{
     ButtonMask, Link, LinkChannel, RetroCore, Rumble, GBA_H, GBA_W, NETPACKET_RELIABLE,
@@ -75,6 +75,8 @@ pub struct EmuHandle {
 enum Cmd {
     Load(Vec<u8>),
     Save(Sender<Vec<u8>>),
+    /// A state for the card, with the achievement progress of the same moment.
+    Capture(Sender<(Vec<u8>, Option<CapturedProgress>)>),
     Sav(Sender<Option<Vec<u8>>>),
     Thumb(Sender<Option<Vec<u8>>>),
     BeginLink(u16, Box<dyn LinkChannel>),
@@ -438,6 +440,12 @@ impl Snapshot for EmuSnapshot {
         request(&self.cmds, &self.shared, Cmd::Load(state));
     }
 
+    fn capture(&self) -> Option<(Vec<u8>, Option<CapturedProgress>)> {
+        let (tx, rx) = channel();
+        request(&self.cmds, &self.shared, Cmd::Capture(tx)).then_some(())?;
+        rx.recv().ok()
+    }
+
     fn running(&self) -> bool {
         self.shared.state.load(Ordering::Acquire) == CoreState::Ready as u8
     }
@@ -532,15 +540,19 @@ impl Worker {
                 self.shared.sav_refused.store(true, Ordering::Release);
             }
         }
+        let mut resumed = false;
         if let Some(resume) = resume {
             eprintln!(
                 "slot: emu: resume state, {} bytes, at {:.1} ms",
                 resume.len(),
                 crate::boot_time::ms()
             );
-            if let Err(e) = core.unserialize(&self.for_core(resume)) {
-                eprintln!("slot: resume: {e}");
-                self.shared.resume_refused.store(true, Ordering::Release);
+            match core.unserialize(&self.for_core(resume)) {
+                Ok(()) => resumed = true,
+                Err(e) => {
+                    eprintln!("slot: resume: {e}");
+                    self.shared.resume_refused.store(true, Ordering::Release);
+                }
             }
         }
         let av = core.av_info();
@@ -588,6 +600,9 @@ impl Worker {
             Some(_) => Achievements::forbidden(),
             None => Achievements::default(),
         };
+        if resumed && self.player.is_none() {
+            ra.resumed();
+        }
         while !self.shared.stop.load(Ordering::Relaxed) {
             for cmd in self.cmds.try_iter() {
                 self.apply(
@@ -684,6 +699,7 @@ impl Worker {
                     }
                     core.set_frame_skip(false);
                     core.run_frame(ButtonMask(0));
+                    ra.core_ran();
                     self.publish(core.video_xrgb8888());
                 }
                 self.shared
@@ -734,6 +750,7 @@ impl Worker {
                             match ready {
                                 Some((p0, p1)) => {
                                     core.run_frame_linked(p0, p1);
+                                    ra.core_ran();
                                     c.advance();
                                     self.shared.linked.fetch_add(1, Ordering::Relaxed);
                                 }
@@ -750,6 +767,7 @@ impl Worker {
                         }
                         None => {
                             core.run_frame(input);
+                            ra.core_ran();
                             // Every emulated frame, fast-forward steps included; never
                             // during a link session.
                             if transport.is_none() {
@@ -938,6 +956,13 @@ impl Worker {
             Cmd::Save(reply) => match core.serialize_exact() {
                 Ok(state) => {
                     let _ = reply.send(self.for_card(state));
+                }
+                Err(e) => eprintln!("slot: {e}"),
+            },
+            Cmd::Capture(reply) => match core.serialize_exact() {
+                Ok(state) => {
+                    let progress = ra.capture();
+                    let _ = reply.send((self.for_card(state), progress));
                 }
                 Err(e) => eprintln!("slot: {e}"),
             },

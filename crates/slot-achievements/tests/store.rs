@@ -18,10 +18,20 @@ use slot_achievements::store::ledger::{self, Ledger, Status};
 use slot_achievements::store::lines::{self, Loaded};
 use slot_achievements::store::time::{Stamp, TimeSource};
 use slot_achievements::store::{
-    Config, Notice, ProgressKey, Store, StoreHandle, LEDGER_FILE, POWEROFF_WAIT, QUEUE_CAP,
+    Config, Notice, ProgressCapture, ProgressKey, Store, StoreHandle, LEDGER_FILE, POWEROFF_WAIT,
+    QUEUE_CAP,
 };
 
 const ROM: &str = "0123456789abcdef0123456789abcdef";
+
+/// A capture with no resume state behind it (these tests are about the store's queue).
+fn cap(progress: Vec<u8>) -> ProgressCapture {
+    ProgressCapture {
+        rom_hash: ROM.into(),
+        resume: Vec::new(),
+        progress,
+    }
+}
 const ROM2: &str = "fedcba9876543210fedcba9876543210";
 
 fn tempdir(tag: &str) -> PathBuf {
@@ -387,7 +397,7 @@ fn unusable_account_names_are_never_written() {
             core: "mgba".into(),
             stem: "x".into(),
         },
-        vec![1],
+        cap(vec![1]),
     );
     r.h.offer_progress(
         ProgressKey {
@@ -396,13 +406,199 @@ fn unusable_account_names_are_never_written() {
             core: "mgba".into(),
             stem: "x".into(),
         },
-        vec![1],
+        cap(vec![1]),
     );
     r.settle();
     assert!(!root.join("accounts").exists());
     assert!(std::fs::read_dir(root.parent().unwrap())
         .unwrap()
         .all(|e| e.unwrap().file_name() != "evil"));
+}
+
+// ---- Progress files across a killed process (Phase 4) ----
+
+/// A buffer framed as rcheevos frames one (marker, payload, DONE chunk with its MD5).
+fn framed(payload: &[u8]) -> Vec<u8> {
+    let mut b = b"RAP\n".to_vec();
+    b.extend_from_slice(payload);
+    b.extend_from_slice(b"DONE");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    let md5 = slot_achievements::hash::md5(&b);
+    b.extend_from_slice(&md5);
+    b
+}
+
+/// The resume state of capture `k` (sizes vary, so lengths are checked too).
+fn resume_for(k: u32) -> Vec<u8> {
+    vec![(k % 251) as u8; 40_000 + (k % 13) as usize * 1000]
+}
+
+/// Child process: capture after capture, each bound to its own resume state, as fast as
+/// the store writes them.
+#[test]
+fn child_captures_forever() {
+    let Ok(root) = std::env::var(CHILD) else {
+        return;
+    };
+    let r = spawn(Path::new(&root), FakeTime::new("boot-a"));
+    let key = ProgressKey {
+        account: "Dean".into(),
+        platform: "GBA".into(),
+        core: "mgba".into(),
+        stem: "Game".into(),
+    };
+    for k in 1u32.. {
+        let mut payload = k.to_le_bytes().to_vec();
+        payload.resize(3000, 0xAB);
+        r.h.offer_progress(
+            key.clone(),
+            ProgressCapture {
+                rom_hash: ROM.into(),
+                resume: resume_for(k),
+                progress: framed(&payload),
+            },
+        );
+        r.settle();
+    }
+}
+
+#[test]
+fn killed_at_any_point_of_a_progress_write_the_file_is_old_or_new_and_bound_right() {
+    use slot_achievements::store::progress::{check, decode, Binding};
+    let root = tempdir("killprogress");
+    let file = root.join("accounts/dean/progress/GBA/mgba/Game.rap");
+    let mut rng = 0xD1B5_4A32_D192_ED03u64;
+    let mut seen = 0;
+    for round in 0..30 {
+        let mut child = run_child("child_captures_forever", &root);
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        std::thread::sleep(Duration::from_millis(30 + rng % 120));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let Ok(bytes) = std::fs::read(&file) else {
+            continue;
+        };
+        seen += 1;
+        // Whole, and bound to exactly the resume state it was captured with.
+        let (_, _, buffer) = decode(&bytes).unwrap_or_else(|| panic!("round {round}: torn"));
+        let k = u32::from_le_bytes(buffer[4..8].try_into().unwrap());
+        let want = Binding::new("dean", ROM, &resume_for(k));
+        assert!(check(&bytes, &want).is_ok(), "round {round}: capture {k}");
+        assert!(
+            check(&bytes, &Binding::new("dean", ROM, &resume_for(k + 1))).is_err(),
+            "round {round}: accepted with the next resume state"
+        );
+    }
+    assert!(seen > 20, "the children rarely got a file written ({seen})");
+}
+
+#[test]
+fn a_game_start_checks_a_capture_still_waiting_before_the_file() {
+    use slot_achievements::store::progress::Refusal;
+    use slot_achievements::store::ProgressFound;
+    let root = tempdir("waitingprogress");
+    let inner = FakeTime::new("boot-a");
+    let time = Arc::new(SlowTime {
+        inner,
+        delay_ms: std::sync::atomic::AtomicU64::new(0),
+    });
+    let r = spawn(&root, time.clone());
+    r.settle();
+    let key = ProgressKey {
+        account: "Dean".into(),
+        platform: "GBA".into(),
+        core: "mgba".into(),
+        stem: "Game".into(),
+    };
+    let old = framed(b"old");
+    let new = framed(b"new");
+    r.h.offer_progress(
+        key.clone(),
+        ProgressCapture {
+            rom_hash: ROM.into(),
+            resume: resume_for(1),
+            progress: old.clone(),
+        },
+    );
+    r.settle();
+    // The store is busy; a newer capture waits in memory, its file not written yet.
+    time.delay_ms.store(300, Ordering::SeqCst);
+    r.h.clock_event(ClockEvent::Manual);
+    std::thread::sleep(Duration::from_millis(20));
+    r.h.offer_progress(
+        key.clone(),
+        ProgressCapture {
+            rom_hash: ROM.into(),
+            resume: resume_for(2),
+            progress: new.clone(),
+        },
+    );
+    assert_eq!(
+        r.h.progress_for(&key, ROM, &resume_for(2)),
+        ProgressFound::Restore(new.clone()),
+        "the waiting capture, not the older file"
+    );
+    assert_eq!(
+        r.h.progress_for(&key, ROM, &resume_for(1)),
+        ProgressFound::Refused(Refusal::OtherResume),
+        "the file's resume state is no longer the newest"
+    );
+    assert_eq!(
+        r.h.progress_for(&key, ROM2, &resume_for(2)),
+        ProgressFound::Refused(Refusal::OtherGame)
+    );
+    let other = ProgressKey {
+        account: "Other".into(),
+        ..key.clone()
+    };
+    assert_eq!(
+        r.h.progress_for(&other, ROM, &resume_for(2)),
+        ProgressFound::Missing
+    );
+    time.delay_ms.store(0, Ordering::SeqCst);
+    assert!(r.h.settle_for_poweroff(Duration::from_secs(10)));
+    assert_eq!(
+        r.h.progress_for(&key, ROM, &resume_for(2)),
+        ProgressFound::Restore(new),
+        "and from the file once written"
+    );
+}
+
+/// The game thread's own share of a resume write: handing the capture over is a short
+/// lock and a message, however big the resume state (it is moved, not copied).
+#[test]
+fn offering_a_capture_costs_the_game_thread_microseconds() {
+    let root = tempdir("offercost");
+    let r = spawn(&root, FakeTime::new("boot-a"));
+    r.settle();
+    let key = ProgressKey {
+        account: "Dean".into(),
+        platform: "GBA".into(),
+        core: "mgba".into(),
+        stem: "Game".into(),
+    };
+    let mut times: Vec<Duration> = (0..300u32)
+        .map(|k| {
+            let capture = ProgressCapture {
+                rom_hash: ROM.into(),
+                resume: vec![k as u8; 600_000],
+                progress: framed(&k.to_le_bytes()),
+            };
+            let t = Instant::now();
+            r.h.offer_progress(key.clone(), capture);
+            t.elapsed()
+        })
+        .collect();
+    times.sort();
+    let p99 = times[times.len() * 99 / 100];
+    eprintln!(
+        "offer_progress with a 600 KB resume state: median {:?}, p99 {p99:?}",
+        times[times.len() / 2]
+    );
+    assert!(p99 < Duration::from_millis(1), "p99 {p99:?}");
+    assert!(r.h.settle_for_poweroff(Duration::from_secs(10)));
 }
 
 // ---- D5 ----
@@ -419,11 +615,11 @@ fn d5_a_pending_unlock_is_on_the_card_within_250_ms_and_before_progress() {
         core: "mgba".into(),
         stem: "Game".into(),
     };
-    assert!(r.h.offer_progress(key.clone(), vec![9; 4096]));
+    assert!(r.h.offer_progress(key.clone(), cap(vec![9; 4096])));
     r.unlock(&time, "dean", 42);
     // A capture taken after the unlock (the store may already have written the first one
     // before the unlock arrived, which is correct): it must wait for the ledger.
-    assert!(r.h.offer_progress(key, vec![8; 4096]));
+    assert!(r.h.offer_progress(key, cap(vec![8; 4096])));
     let began = Instant::now();
     assert!(
         r.h.settle_for_poweroff(POWEROFF_WAIT),
@@ -502,17 +698,15 @@ fn progress_captures_are_coalesced_newest_kept() {
     };
     // Hold the store busy with a batch so captures pile up behind it.
     for i in 0..200u32 {
-        r.h.offer_progress(key("A"), i.to_le_bytes().to_vec());
+        r.h.offer_progress(key("A"), cap(i.to_le_bytes().to_vec()));
     }
     let accepted = (0..20)
-        .filter(|i| r.h.offer_progress(key(&format!("G{i}")), vec![1]))
+        .filter(|i| r.h.offer_progress(key(&format!("G{i}")), cap(vec![1])))
         .count();
     r.settle();
-    assert_eq!(
-        std::fs::read(root.join("accounts/dean/progress/GBA/mgba/A.rap")).unwrap(),
-        199u32.to_le_bytes(),
-        "the newest capture wins"
-    );
+    let file = std::fs::read(root.join("accounts/dean/progress/GBA/mgba/A.rap")).unwrap();
+    let (_, _, buffer) = slot_achievements::store::progress::decode(&file).unwrap();
+    assert_eq!(buffer, 199u32.to_le_bytes(), "the newest capture wins");
     assert!(accepted >= 1);
 }
 
@@ -896,7 +1090,7 @@ fn progress_waits_while_the_ledger_cannot_be_written() {
         stem: "Game".into(),
     };
     r.unlock(&time, "dean", 6);
-    r.h.offer_progress(key, vec![1; 64]);
+    r.h.offer_progress(key, cap(vec![1; 64]));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !r.h.failing() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
@@ -934,7 +1128,7 @@ fn captures_arriving_while_the_store_is_busy_coalesce_and_are_capped() {
     let mut accepted = 0;
     for i in 0..200u32 {
         if r.h
-            .offer_progress(key(&format!("G{}", i % 20)), i.to_le_bytes().to_vec())
+            .offer_progress(key(&format!("G{}", i % 20)), cap(i.to_le_bytes().to_vec()))
         {
             accepted += 1;
         }
@@ -952,10 +1146,9 @@ fn captures_arriving_while_the_store_is_busy_coalesce_and_are_capped() {
     let files = std::fs::read_dir(&dir).unwrap().count();
     assert_eq!(files, 8);
     // Each holds the newest capture taken for it.
-    assert_eq!(
-        std::fs::read(dir.join("G0.rap")).unwrap(),
-        180u32.to_le_bytes()
-    );
+    let file = std::fs::read(dir.join("G0.rap")).unwrap();
+    let (_, _, buffer) = slot_achievements::store::progress::decode(&file).unwrap();
+    assert_eq!(buffer, 180u32.to_le_bytes());
 }
 
 #[test]
@@ -979,11 +1172,18 @@ fn leftover_temporary_files_are_swept_at_start() {
     std::fs::write(root.join(".unlocks.txt.123.0.tmp"), b"half").unwrap();
     std::fs::write(root.join("games/.index.txt.9.1.tmp"), b"half").unwrap();
     std::fs::write(root.join("keep.txt"), b"mine").unwrap();
+    // One this process is writing right now (a cache, on the network worker's thread).
+    let own = format!("games/.abc.json.{}.7.tmp", std::process::id());
+    std::fs::write(root.join(&own), b"being written").unwrap();
     let r = spawn(&root, FakeTime::new("boot-a"));
     r.settle();
     assert!(!root.join(".unlocks.txt.123.0.tmp").exists());
     assert!(!root.join("games/.index.txt.9.1.tmp").exists());
     assert!(root.join("keep.txt").exists());
+    assert!(
+        root.join(&own).exists(),
+        "a write in progress was swept away"
+    );
 }
 
 #[test]

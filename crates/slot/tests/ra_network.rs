@@ -152,7 +152,7 @@ fn a_first_online_launch_fetches_the_set_tracks_it_and_sends_an_unlock_over_http
         "Castlevania",
         &[fake::def(11, "0xH001000=1")],
     ));
-    ra.game_started(5, path);
+    ra.game_started(5, path, None);
     let plan = tracked(&mut ra).expect("no cache: tracked from the fetched set");
     assert_eq!(plan.set.console_id, 5);
     assert_eq!(plan.set.achievements[0].id, 11);
@@ -198,7 +198,7 @@ fn a_changed_set_is_cached_during_play_and_used_at_the_next_launch() {
     ra.store().log_in(Account::new("Dean", "TOKEN").unwrap());
     let (path, _) = rom(card.path(), 2);
     world.lock().unwrap().game = Some(fake::game_sets(510, 5, "C", &[fake::def(11, "0xH0=1")]));
-    ra.game_started(5, path.clone());
+    ra.game_started(5, path.clone(), None);
     let first = tracked(&mut ra).unwrap();
     assert_eq!(first.set.achievements.len(), 1);
     // The next launch tracks from the cache at once; the server now has a changed set.
@@ -208,7 +208,7 @@ fn a_changed_set_is_cached_during_play_and_used_at_the_next_launch() {
         "C",
         &[fake::def(11, "0xH0=2"), fake::def(12, "0xH1=1")],
     ));
-    ra.game_started(5, path.clone());
+    ra.game_started(5, path.clone(), None);
     let second = tracked(&mut ra).unwrap();
     assert_eq!(
         second.set.achievements.len(),
@@ -223,7 +223,7 @@ fn a_changed_set_is_cached_during_play_and_used_at_the_next_launch() {
         !ra.poll().iter().any(|u| matches!(u, RaUpdate::Track(_))),
         "not applied during play (D12)"
     );
-    ra.game_started(5, path);
+    ra.game_started(5, path, None);
     let third = tracked(&mut ra).unwrap();
     assert_eq!(
         third.set.achievements.len(),

@@ -3317,7 +3317,7 @@ impl App {
         let (Some(root), Some(snapshot)) = (&self.root, &self.snapshot) else {
             return;
         };
-        let Some(state) = snapshot.state() else {
+        let Some((state, progress)) = snapshot.capture() else {
             eprintln!("slot: eject: the core gave up no state");
             return;
         };
@@ -3332,6 +3332,14 @@ impl App {
             sav.as_deref(),
         ) {
             Ok(()) => {
+                offer_progress(
+                    self.ra_store.as_ref(),
+                    self.platform,
+                    self.core,
+                    stem,
+                    state,
+                    progress,
+                );
                 self.state.cart = None;
                 self.state.cart_platform = None;
                 self.card_failing.store(false, Ordering::Relaxed);
@@ -4081,7 +4089,7 @@ impl App {
         else {
             return;
         };
-        let Some(state) = snapshot.state() else {
+        let Some((state, progress)) = snapshot.capture() else {
             eprintln!("slot: autosave: the core gave up no state");
             return;
         };
@@ -4089,6 +4097,7 @@ impl App {
         let (root, platform, core, cart) =
             (root.clone(), self.platform, self.core, cart.to_owned());
         let failing = self.card_failing.clone();
+        let ra = self.ra_store.clone();
         let write = move || {
             let written = persist::flush(
                 &root,
@@ -4102,6 +4111,9 @@ impl App {
                 eprintln!("slot: autosave: {e}");
             }
             failing.store(written.is_err(), Ordering::Relaxed);
+            if written.is_ok() {
+                offer_progress(ra.as_ref(), platform, core, &cart, state, progress);
+            }
         };
         match std::thread::Builder::new()
             .name("slot-autosave".into())
@@ -4136,7 +4148,7 @@ impl App {
         let (Some(root), Some(snapshot), Some(cart)) = (&self.root, &self.snapshot, cart) else {
             return true;
         };
-        let Some(state) = snapshot.state() else {
+        let Some((state, progress)) = snapshot.capture() else {
             if !snapshot.running() {
                 // Still loading, or failed to start: no progress to lose.
                 eprintln!("slot: flush: no game running, nothing to save");
@@ -4167,6 +4179,17 @@ impl App {
             eprintln!("slot: flush: {e}");
         }
         self.card_failing.store(written.is_err(), Ordering::Relaxed);
+        if written.is_ok() {
+            // Queued, never waited for: the lid and power paths are not held up.
+            offer_progress(
+                self.ra_store.as_ref(),
+                self.platform,
+                self.core,
+                cart,
+                state,
+                progress,
+            );
+        }
         written.is_ok()
     }
 
@@ -4477,6 +4500,36 @@ impl App {
         if let Some(p) = &mut self.polaroids {
             p.set_title_face(Some(face));
         }
+    }
+}
+
+/// After a resume write reached the card: its progress, bound to the exact bytes just
+/// written, goes to the RA store, which writes it on its own thread. Nothing when no
+/// resume was written (refused, or not wanted) or nothing was captured.
+fn offer_progress(
+    ra: Option<&slot_achievements::store::StoreHandle>,
+    platform: Platform,
+    core: Core,
+    stem: &str,
+    resume: Option<Vec<u8>>,
+    progress: Option<crate::achievements::CapturedProgress>,
+) {
+    let (Some(ra), Some(resume), Some(p)) = (ra, resume, progress) else {
+        return;
+    };
+    let key = slot_achievements::store::ProgressKey {
+        account: p.owner.account,
+        platform: platform.dir_name().to_string(),
+        core: core.as_str().to_string(),
+        stem: stem.to_string(),
+    };
+    let capture = slot_achievements::store::ProgressCapture {
+        rom_hash: p.owner.rom_hash,
+        resume,
+        progress: p.bytes,
+    };
+    if !ra.offer_progress(key, capture) {
+        eprintln!("slot: achievements: progress not kept this time; it resets at the next cold boot if this resume is used");
     }
 }
 

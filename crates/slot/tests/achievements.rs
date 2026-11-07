@@ -214,6 +214,15 @@ impl Rig {
     }
 
     fn track_into(&self, achievements: &[(u32, &str)], events: Box<dyn RaSink>) {
+        self.track_owned(achievements, events, None);
+    }
+
+    fn track_owned(
+        &self,
+        achievements: &[(u32, &str)],
+        events: Box<dyn RaSink>,
+        owner: Option<slot::achievements::ProgressOwner>,
+    ) {
         self.emu.set_achievements(Some(AchievementPlan {
             set: GameSet {
                 console_id: console::GAMEBOY_ADVANCE,
@@ -228,6 +237,8 @@ impl Rig {
                 unlocked: Vec::new(),
             },
             events,
+            owner,
+            progress: None,
         }));
         // Commands are applied before the next frame runs.
         self.run(3);
@@ -612,4 +623,47 @@ fn unlocks_reach_the_ra_store_ledger() {
     drop(r);
     drop(store);
     let _ = std::fs::remove_dir_all(&card);
+}
+
+#[test]
+fn no_progress_is_captured_while_an_unlock_waits_for_the_store() {
+    let r = rig();
+    let snap = r.emu.snapshot();
+    let (tx, _rx) = mpsc::channel();
+    let full = Arc::new(AtomicBool::new(true));
+    r.track_owned(
+        &[(31, "0xX000200=5"), (32, "0xH000100=1.1000.")],
+        Box::new(Refusing {
+            full: full.clone(),
+            refused: Arc::new(AtomicUsize::new(0)),
+            tx,
+        }),
+        Some(slot::achievements::ProgressOwner {
+            account: "dean".into(),
+            rom_hash: "0123456789abcdef0123456789abcdef".into(),
+        }),
+    );
+    let (_, progress) = snap.capture().unwrap();
+    assert!(progress.is_some(), "captured while nothing waits");
+    r.set(5);
+    r.run(5);
+    let (state, progress) = snap.capture().unwrap();
+    assert!(!state.is_empty(), "the state itself is still taken");
+    assert!(
+        progress.is_none(),
+        "a progress file must never land ahead of an unlock the ledger has not taken"
+    );
+    full.store(false, Ordering::SeqCst);
+    r.run(3);
+    assert!(
+        snap.capture().unwrap().1.is_some(),
+        "captured again once taken"
+    );
+}
+
+#[test]
+fn without_an_owner_nothing_is_captured() {
+    let r = rig();
+    let _rx = r.track(&[(1, "0xX000200=5")]);
+    assert!(r.emu.snapshot().capture().unwrap().1.is_none());
 }

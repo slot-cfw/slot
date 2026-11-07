@@ -11,11 +11,11 @@ use std::sync::Arc;
 
 use slot_achievements::api::{self, Call, Reply};
 use slot_achievements::net::{Event, Link, Transport, Worker, WorkerHandle};
-use slot_achievements::session::{self, Prepared};
+use slot_achievements::session::{self, Prepared, Resume};
 use slot_achievements::store::{Config, Notice, Store, StoreHandle};
 use slot_net::web::{self, Site};
 
-use crate::achievements::{clock_listener, AchievementPlan};
+use crate::achievements::{clock_listener, AchievementPlan, ProgressOwner};
 
 /// slot-net's HTTPS client, for retroachievements.org only.
 pub struct SiteTransport {
@@ -150,15 +150,20 @@ impl Ra {
     }
 
     /// A game was seated. Prepared on a short-lived thread (the first launch of a ROM
-    /// hashes it), so the game thread never waits; the plan arrives through [`Ra::poll`].
-    pub fn game_started(&mut self, console_id: u32, rom: PathBuf) {
+    /// hashes it, and saved progress is checked against the resume state), so the game
+    /// thread never waits; the plan arrives through [`Ra::poll`]. `resume`: the bytes the
+    /// emulator thread was given to start from, if any (shared, not copied).
+    pub fn game_started(&mut self, console_id: u32, rom: PathBuf, resume: Option<Resume>) {
         self.game += 1;
         self.game_hash = None;
         let (id, store, tx) = (self.game, self.store.handle(), self.ready_tx.clone());
         if let Err(e) = std::thread::Builder::new()
             .name("slot-ra-prepare".into())
             .spawn(move || {
-                let _ = tx.send((id, session::prepare(&store, console_id, &rom)));
+                let _ = tx.send((
+                    id,
+                    session::prepare(&store, console_id, &rom, resume.as_ref()),
+                ));
             })
         {
             eprintln!("slot: achievements: could not prepare the game ({e}); not tracked");
@@ -188,6 +193,7 @@ impl Ra {
                             &p.rom_hash,
                             game,
                             &p.unlocked,
+                            p.progress,
                         )));
                     }
                     // Online: refresh (cached, applied next launch) or fetch (used now).
@@ -207,7 +213,7 @@ impl Ra {
                 } => {
                     if self.game_hash.as_deref() == Some(rom_hash.as_str()) {
                         out.push(RaUpdate::Track(
-                            self.plan(&account, &rom_hash, &game, &unlocked),
+                            self.plan(&account, &rom_hash, &game, &unlocked, None),
                         ));
                     }
                 }
@@ -227,10 +233,16 @@ impl Ra {
         rom_hash: &str,
         game: &api::GameData,
         unlocked: &[u32],
+        progress: Option<Vec<u8>>,
     ) -> AchievementPlan {
         AchievementPlan {
             set: game.game_set(unlocked),
             events: Box::new(self.store.handle().unlock_sink(account, rom_hash)),
+            owner: Some(ProgressOwner {
+                account: account.to_string(),
+                rom_hash: rom_hash.to_string(),
+            }),
+            progress,
         }
     }
 }

@@ -8,6 +8,12 @@ pub trait Snapshot {
     fn thumb(&self) -> Option<Vec<u8>>;
     fn load(&self, state: Vec<u8>);
 
+    /// A state for a resume write, with the achievement progress captured in the same
+    /// moment (none unless achievements are tracked).
+    fn capture(&self) -> Option<(Vec<u8>, Option<crate::achievements::CapturedProgress>)> {
+        self.state().map(|s| (s, None))
+    }
+
     /// Whether a game is running whose progress a save protects. A core still loading, or
     /// one that failed to start, has nothing new to lose.
     fn running(&self) -> bool {

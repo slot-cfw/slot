@@ -413,3 +413,62 @@ fn a_delta_condition_compares_with_the_previous_frame() {
     mem.iwram[0x100] = 5;
     assert_eq!(e.frame(), Frame::Evaluated(1));
 }
+
+#[test]
+fn real_rcheevos_progress_passes_the_store_check_and_any_damage_fails_it() {
+    use slot_achievements::store::progress::intact;
+    let mut mem = Gba::new();
+    let mut e = Evaluator::new(GBA);
+    unsafe { e.apply_map(&mem.map()) };
+    e.load(&common::sets::realistic_gba_set(60));
+    for i in 0..30u8 {
+        mem.iwram[0x100] = i;
+        e.frame();
+    }
+    let mut saved = Vec::new();
+    assert!(e.serialize_progress(&mut saved));
+    assert!(
+        intact(&saved),
+        "rcheevos' own framing, as the store checks it"
+    );
+    for i in (0..saved.len()).step_by(7) {
+        let mut d = saved.clone();
+        d[i] ^= 0x10;
+        assert!(!intact(&d), "byte {i} changed");
+    }
+    assert!(!intact(&saved[..saved.len() - 1]));
+}
+
+/// Phases plan, Phase 4: the emulator thread's added work per resume write (capturing
+/// progress with the state) stays under 1 ms at the 99th percentile. On this build
+/// machine; the device is slower, so the margin is reported, not just passed.
+#[test]
+fn capturing_progress_for_a_60_achievement_set_takes_well_under_a_millisecond() {
+    let mut mem = Gba::new();
+    let mut e = Evaluator::new(GBA);
+    unsafe { e.apply_map(&mem.map()) };
+    e.load(&common::sets::realistic_gba_set(60));
+    for i in 0..60u8 {
+        mem.iwram[0x100] = i;
+        e.frame();
+    }
+    let mut buf = Vec::new();
+    let mut times: Vec<std::time::Duration> = (0..2000)
+        .map(|_| {
+            let t = std::time::Instant::now();
+            // As the emulator thread does: a new buffer each capture.
+            buf = Vec::new();
+            assert!(e.serialize_progress(&mut buf));
+            t.elapsed()
+        })
+        .collect();
+    times.sort();
+    let p99 = times[times.len() * 99 / 100];
+    eprintln!(
+        "progress capture, 60 achievements, {} bytes: median {:?}, p99 {:?}",
+        buf.len(),
+        times[times.len() / 2],
+        p99
+    );
+    assert!(p99 < std::time::Duration::from_millis(1), "p99 {p99:?}");
+}

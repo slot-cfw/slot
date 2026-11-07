@@ -13,6 +13,12 @@
 //! - when rewinding ends, and when a link session ends: reset;
 //! - a cable joiner running the host's game, or a session started linked, never tracks.
 //!
+//! Partial progress (Phase 4, architecture 6.3): every state taken for a resume write
+//! also captures rcheevos' progress, in the same moment. A plan that carries saved
+//! progress restores it only if the core is still exactly at the resume state it was
+//! started with: unserialized, and not run, loaded or rewound since. Otherwise it starts
+//! fresh, so restored previous values are never compared against later memory.
+//!
 //! The evaluator holds pointers into the core's memory, so it lives only on the emulator
 //! thread and is dropped before the core is unloaded.
 //!
@@ -84,11 +90,31 @@ impl RaSink for UnlockSink {
 pub struct AchievementPlan {
     pub set: GameSet,
     pub events: Box<dyn RaSink>,
+    /// Whose progress this is, so captures can be filed for that account and ROM. `None`:
+    /// progress is never captured.
+    pub owner: Option<ProgressOwner>,
+    /// Saved progress (already checked against the account, ROM and resume state), to
+    /// restore if the core is still at that resume state.
+    pub progress: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProgressOwner {
+    pub account: String,
+    pub rom_hash: String,
+}
+
+/// Progress captured with a state, for the RA store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapturedProgress {
+    pub owner: ProgressOwner,
+    pub bytes: Vec<u8>,
 }
 
 struct Tracker {
     eval: Evaluator,
     events: Box<dyn RaSink>,
+    owner: Option<ProgressOwner>,
     // Unlocks the sink handed back, offered again each frame. Sized for every achievement
     // in the set, so a frame never allocates for it.
     backlog: Vec<RaEvent>,
@@ -148,6 +174,9 @@ pub(crate) struct Achievements {
     // use it if the core has not published a newer one.
     parked: Option<MemoryMap>,
     forbidden: bool,
+    /// The core holds exactly the resume state it was started with: unserialized, and not
+    /// run, loaded or rewound since. Saved progress applies only then.
+    fresh_resume: bool,
 }
 
 impl Achievements {
@@ -157,6 +186,33 @@ impl Achievements {
             forbidden: true,
             ..Achievements::default()
         }
+    }
+
+    /// The resume state was unserialized successfully at start, before any frame.
+    pub(crate) fn resumed(&mut self) {
+        self.fresh_resume = true;
+    }
+
+    /// The core ran a frame (any kind: normal, linked, rewound). Call after every
+    /// `run_frame*`: from here on, saved progress no longer describes the core's memory.
+    pub(crate) fn core_ran(&mut self) {
+        self.fresh_resume = false;
+    }
+
+    /// Captures progress with a state about to be taken for the card. `None` when not
+    /// tracking, when no owner was given, or while an unlock waits in the backlog (so a
+    /// progress file never lands ahead of an unlock the ledger has not taken yet).
+    /// Microseconds; allocates the buffer.
+    pub(crate) fn capture(&self) -> Option<CapturedProgress> {
+        let t = self.tracker.as_ref()?;
+        let owner = t.owner.clone()?;
+        if !t.backlog.is_empty() || t.rewinding {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        t.eval
+            .serialize_progress(&mut bytes)
+            .then_some(CapturedProgress { owner, bytes })
     }
 
     /// Starts tracking with `plan`, or stops with `None`.
@@ -172,6 +228,7 @@ impl Achievements {
         let mut tracker = Tracker {
             eval: Evaluator::new(plan.set.console_id),
             events: plan.events,
+            owner: plan.owner,
             backlog: Vec::with_capacity(plan.set.achievements.len()),
             map: None,
             rewinding: false,
@@ -198,6 +255,23 @@ impl Achievements {
         }
         for id in loaded.disabled {
             let _ = tracker.events.offer(RaEvent::Disabled(id));
+        }
+        // Saved progress: only onto the exact resume state, once.
+        let fresh = std::mem::take(&mut self.fresh_resume);
+        if let Some(progress) = plan.progress {
+            if !fresh {
+                eprintln!("slot: achievements: progress arrived after the game started; tracking starts fresh");
+            } else if !slot_achievements::store::progress::intact(&progress) {
+                eprintln!(
+                    "slot: achievements: the progress data is damaged; tracking starts fresh"
+                );
+            } else if tracker.eval.restore_progress(&progress) {
+                eprintln!("slot: achievements: progress restored");
+            } else {
+                eprintln!(
+                    "slot: achievements: rcheevos refused the progress; tracking starts fresh"
+                );
+            }
         }
         self.tracker = Some(tracker);
     }
@@ -240,6 +314,7 @@ impl Achievements {
 
     /// After a state was loaded by hand (the switcher, or Undo Load).
     pub(crate) fn state_loaded(&mut self, core: &mut dyn RetroCore) {
+        self.fresh_resume = false;
         if let Some(t) = self.tracker.as_mut() {
             t.take_map(core);
             t.eval.reset();
@@ -271,6 +346,7 @@ impl Achievements {
 
     /// This core now runs another player's game (a cable joiner): never track again.
     pub(crate) fn forbid(&mut self) {
+        self.fresh_resume = false;
         self.stop();
         self.parked = None;
         self.forbidden = true;
