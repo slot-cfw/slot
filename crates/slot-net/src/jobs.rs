@@ -151,8 +151,9 @@ struct Shared {
     acks: Mutex<std::collections::HashSet<u64>>,
     acked: Condvar,
     next_ack: AtomicU64,
-    /// Told each time a connection is made (Syncthing's supervisor checks its health then).
-    on_connected: Mutex<Option<OnConnected>>,
+    /// Told each time a connection is made: Syncthing's supervisor checks its health then,
+    /// and RetroAchievements sends what is waiting (0.6.0).
+    on_connected: Mutex<Vec<OnConnected>>,
     /// A signal reading is queued: another is not added.
     signal_queued: AtomicBool,
     /// Told of network-time measurements and clock steps as they happen (RetroAchievements
@@ -258,7 +259,7 @@ impl NetJobs {
             acks: Mutex::new(std::collections::HashSet::new()),
             acked: Condvar::new(),
             next_ack: AtomicU64::new(1),
-            on_connected: Mutex::new(None),
+            on_connected: Mutex::new(Vec::new()),
             signal_queued: AtomicBool::new(false),
             on_time: Mutex::new(None),
         });
@@ -440,10 +441,11 @@ impl NetJobs {
         }
     }
 
-    /// Called (on the network thread, so it must not block) each time Wi-Fi connects.
+    /// Adds a listener called (on the network thread, so it must not block) each time
+    /// Wi-Fi connects. Listeners are called in the order they were added.
     pub fn set_on_connected(&self, f: impl Fn() + Send + Sync + 'static) {
         if let Ok(mut h) = self.shared.on_connected.lock() {
-            *h = Some(Arc::new(f));
+            h.push(Arc::new(f));
         }
     }
 
@@ -717,8 +719,13 @@ impl Worker {
         let connected = matches!(link, Link::Connected { .. });
         self.shared.set_link(link);
         if connected {
-            let hook = self.shared.on_connected.lock().ok().and_then(|h| h.clone());
-            if let Some(f) = hook {
+            let hooks = self
+                .shared
+                .on_connected
+                .lock()
+                .map(|h| h.clone())
+                .unwrap_or_default();
+            for f in hooks {
                 f();
             }
         }

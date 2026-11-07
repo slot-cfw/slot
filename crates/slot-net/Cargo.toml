@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# A local HTTPS fake server for tests (the RetroAchievements fake server).
+fake-server = []
+
 [dependencies]
 libc = { workspace = true }
 slot-store = { path = "../slot-store" }
@@ -12,6 +16,9 @@ slot-store = { path = "../slot-store" }
 # only its certificate (P2-1), and checking its stored password hash (I9).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 bcrypt = { version = "0.19", default-features = false, features = ["std"] }
+# RetroAchievements (0.6.0 Phase 3): public CA roots for retroachievements.org only;
+# the Syncthing endpoint keeps trusting only its pinned certificate.
+webpki-roots = "1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

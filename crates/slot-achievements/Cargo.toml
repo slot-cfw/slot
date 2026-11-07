@@ -7,6 +7,10 @@ license.workspace = true
 description = "RetroAchievements evaluation for slot.advance, on rcheevos (vendored, MIT)"
 links = "rcheevos"
 
+[features]
+# Server answers shaped like retroachievements.org's, for other crates' tests.
+test-support = []
+
 [dependencies]
 libc.workspace = true
 slot-retro = { path = "../slot-retro" }

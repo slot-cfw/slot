@@ -18,6 +18,10 @@ fn main() {
         "rhash/hash.c",
         "rhash/hash_rom.c",
         "rhash/md5.c",
+        // Requests and responses (0.6.0 Phase 3): rcheevos builds and parses every call.
+        "rapi/rc_api_common.c",
+        "rapi/rc_api_runtime.c",
+        "rapi/rc_api_user.c",
     ]
     .iter()
     .map(|f| src.join(f))
@@ -30,6 +34,7 @@ fn main() {
     }
     files.sort();
     files.push(root.join("src/shim.c"));
+    files.push(root.join("src/shim_api.c"));
 
     let mut build = cc::Build::new();
     build
@@ -52,6 +57,7 @@ fn main() {
     build.compile("rcheevos");
 
     println!("cargo:rerun-if-changed=src/shim.c");
+    println!("cargo:rerun-if-changed=src/shim_api.c");
     println!("cargo:rerun-if-changed=vendor");
     println!("cargo:rerun-if-changed=build.rs");
 }

@@ -252,6 +252,11 @@ fn build_request(
 
 /// Reads until the response is complete (by length, chunk terminator or end of stream).
 fn read_response(s: &mut impl Read) -> Result<Vec<u8>, Error> {
+    read_response_capped(s, MAX_RESPONSE)
+}
+
+/// The same, with a size cap of the caller's choosing (shared with `crate::web`).
+pub(crate) fn read_response_capped(s: &mut impl Read, cap: usize) -> Result<Vec<u8>, Error> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -262,7 +267,7 @@ fn read_response(s: &mut impl Read) -> Result<Vec<u8>, Error> {
             Ok(0) => return Ok(buf),
             Ok(n) => {
                 buf.extend_from_slice(&chunk[..n]);
-                if buf.len() > MAX_RESPONSE {
+                if buf.len() > cap {
                     return Err(Error::Protocol("response too large".into()));
                 }
             }
@@ -321,7 +326,7 @@ fn dechunk(mut body: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-fn parse_response(raw: &[u8]) -> Result<Response, Error> {
+pub(crate) fn parse_response(raw: &[u8]) -> Result<Response, Error> {
     let (head, body) = split_head(raw).ok_or_else(|| Error::Protocol("no headers".into()))?;
     let status = head
         .split_whitespace()

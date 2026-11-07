@@ -12,6 +12,8 @@
 //! `design/v5-implementation-plan.md` (approved at checkpoint A, 22 October 2026).
 
 pub mod clock;
+#[cfg(any(test, feature = "fake-server"))]
+pub mod fake_server;
 pub mod jobs;
 pub mod psk;
 pub mod run;
@@ -21,6 +23,7 @@ pub mod ssh;
 pub mod sync;
 pub mod sys;
 pub mod text;
+pub mod web;
 pub mod wifi;
 
 pub use jobs::{

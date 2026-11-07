@@ -24,6 +24,9 @@ use std::marker::PhantomData;
 
 use slot_retro::{MemoryDescriptor, MemoryMap};
 
+pub mod api;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fake;
 pub mod hash;
 pub mod store;
 
