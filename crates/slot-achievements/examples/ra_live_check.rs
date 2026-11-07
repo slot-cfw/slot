@@ -90,7 +90,7 @@ fn main() {
     };
     let _ = writeln!(
         out,
-        "- Log in: OK as `{canon}` (HTTP {}; token received, not shown)",
+        "- Log in: OK (HTTP {}; the account name and token are not shown: these logs are public)",
         reply.status
     );
 
