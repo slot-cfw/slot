@@ -28,5 +28,6 @@ lz4_flex = { workspace = true }
 png = { workspace = true }
 
 [dev-dependencies]
+slot-net = { path = "../slot-net", features = ["fake-server"] }
 slot-gfx = { path = "../slot-gfx", default-features = false, features = ["test-support"] }
 tempfile = { workspace = true }

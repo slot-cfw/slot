@@ -321,3 +321,92 @@ fn network_time_events_reach_the_clock_history() {
         "a step with the RTC written anchors:\n{text}"
     );
 }
+
+/// Checkpoint C (Dean, 7 Nov 2026): a ROM is being hashed for the first time when an
+/// achievement unlocks, and the player chooses Power Off. The unlock must be on the card
+/// within the 250 ms bound, the emulator thread must never wait, and the lid path must
+/// add no delay.
+#[test]
+fn an_unlock_during_rom_hashing_then_manual_power_off_is_kept_within_250_ms() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let d = tmp_root_with_carts(&["Emerald"]);
+    // A 32 MB ROM: the largest GBA cartridge, so the longest first-time hash.
+    let rom = d.path().join("Big.gba");
+    let bytes: Vec<u8> = (0..32u32 << 20).map(|i| (i ^ (i >> 9)) as u8).collect();
+    std::fs::write(&rom, &bytes).unwrap();
+    let (mut a, store, _rx) = with_store(d.path(), Arc::new(time::System));
+    let h = store.handle();
+    choose_power_off(&mut a);
+
+    // The game's preparation hashes the ROM on its own thread.
+    let hashing = Arc::new(AtomicBool::new(true));
+    let (h2, r2, flag) = (h.clone(), rom.clone(), hashing.clone());
+    let began = Instant::now();
+    let hasher = std::thread::spawn(move || {
+        let r = h2.rom_hash(slot_achievements::console::GAMEBOY_ADVANCE, &r2);
+        flag.store(false, Ordering::SeqCst);
+        (r, began.elapsed())
+    });
+    std::thread::sleep(Duration::from_millis(15));
+
+    // The achievement unlocks on the emulator thread: offered without waiting.
+    let offered = Instant::now();
+    h.offer_unlock("dean", ROM, 7, time::now()).unwrap();
+    let offer_took = offered.elapsed();
+    let still_hashing = hashing.load(Ordering::SeqCst);
+
+    // Manual Power Off straight away.
+    let off = Instant::now();
+    a.poweroff();
+    let waited = off.elapsed();
+    let on_card =
+        std::fs::read_to_string(slot_achievements::store::root(d.path()).join("unlocks.txt"))
+            .unwrap_or_default();
+
+    let (hash, hash_took) = hasher.join().unwrap();
+    assert_eq!(
+        hash.unwrap(),
+        slot_achievements::hash::hex(&slot_achievements::hash::md5(&bytes)),
+        "the hash finished correctly"
+    );
+    eprintln!(
+        "hash took {hash_took:?} (still hashing at the unlock: {still_hashing}); offer took {offer_took:?}; power-off waited {waited:?}"
+    );
+    assert!(
+        offer_took < Duration::from_millis(2),
+        "the emulator thread waited {offer_took:?}"
+    );
+    assert!(
+        waited <= Duration::from_millis(250),
+        "power-off waited {waited:?}"
+    );
+    assert!(
+        on_card.contains("\tpending\tdean\t"),
+        "the unlock is on the card when power-off goes on:\n{on_card}"
+    );
+    assert!(
+        still_hashing,
+        "the unlock came while the ROM was being hashed"
+    );
+    // The ledger write itself takes a few ms here; a store busy hashing would hold the
+    // unlock for most of the hash (tens of ms here, seconds on the handheld's card).
+    assert!(
+        waited < Duration::from_millis(30),
+        "power-off waited {waited:?} (the hash took {hash_took:?}): hashing must never hold the store"
+    );
+}
+
+#[test]
+fn a_lid_close_with_ra_writes_pending_adds_no_wait() {
+    let d = tmp_root_with_carts(&["Emerald"]);
+    let (mut a, store, _rx) = with_store(d.path(), Arc::new(Slow));
+    pending_unlock(&store);
+    let began = Instant::now();
+    a.apply(Action::LidClose);
+    assert!(
+        began.elapsed() < Duration::from_millis(30),
+        "the lid path waited {:?}",
+        began.elapsed()
+    );
+    assert!(store.handle().pending(), "the RA write was not waited for");
+}
