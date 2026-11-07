@@ -46,8 +46,26 @@ fn send(site: &Site, call: &Call) -> Result<Reply, String> {
 }
 
 fn main() {
-    let user = std::env::var("RA_TEST_USERNAME").expect("RA_TEST_USERNAME is not set");
-    let password = std::env::var("RA_TEST_PASSWORD").expect("RA_TEST_PASSWORD is not set");
+    let raw_user = std::env::var("RA_TEST_USERNAME").expect("RA_TEST_USERNAME is not set");
+    let raw_password = std::env::var("RA_TEST_PASSWORD").expect("RA_TEST_PASSWORD is not set");
+    // Shapes only, never the values: enough to spot a secret pasted with a stray space or
+    // line break, or an email address entered as the user name.
+    let pw = raw_password.trim_matches(['\r', '\n']);
+    let shape = format!(
+        "user name {}{}; password {}{}",
+        if raw_user.trim().is_empty() { "EMPTY" } else { "set" },
+        match (raw_user.trim() != raw_user, raw_user.contains('@')) {
+            (true, true) => " (had spaces or a line break around it, removed; looks like an email address, but RetroAchievements needs the user name)",
+            (true, false) => " (had spaces or a line break around it, removed)",
+            (false, true) => " (looks like an email address, but RetroAchievements needs the user name)",
+            (false, false) => "",
+        },
+        if pw.is_empty() { "EMPTY" } else { "set" },
+        if pw != raw_password { " (had a line break after it, removed)" } else { "" },
+    );
+    let user = raw_user.trim().to_string();
+    let password = raw_password.trim_matches(['\r', '\n']).to_string();
+    drop(raw_password);
     let games = std::env::var("RA_GAMES").unwrap_or_else(|_| "id:510,id:785".into());
     let focus: Vec<String> = std::env::var("RA_FOCUS")
         .unwrap_or_default()
@@ -63,6 +81,7 @@ fn main() {
         "## slot.advance RetroAchievements live check (read-only)\n"
     );
     let _ = writeln!(out, "- User agent: `{}`", site.user_agent);
+    let _ = writeln!(out, "- Secrets: {shape}");
 
     // 1. Log in with the password: TLS to the real certificate, rcheevos' request and parser.
     let call = api::login_password(&user, &password).expect("request");
