@@ -824,6 +824,7 @@ impl Session {
         self.emu = Some(emu);
         // A resume that could not be read is not given to RetroAchievements either.
         let shared = if unread { None } else { shared };
+        self.app.discard_unlock_notices();
         self.ra_game_started(platform, core, linked.is_some(), rom, stem, shared);
     }
 

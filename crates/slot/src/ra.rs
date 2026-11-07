@@ -11,8 +11,12 @@
 //! earlier generation is dropped: a game's preparation, the definitions fetched for a first
 //! online launch, or a login result. So a late answer for a game that has been ejected and
 //! inserted again, or for an account that has logged out, never activates anything.
+//!
+//! Unlock notices are display only: one for an achievement outside the set tracked now
+//! (its game ended, or another game started, before the card write finished) is dropped.
+//! The unlock itself is already on the card and is submitted as usual.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -131,6 +135,9 @@ pub struct Ra {
     /// Titles and points of every achievement in sets loaded this boot, by account and ID,
     /// for the unlock notice (which may come after its game has ended).
     titles: HashMap<(String, u32), (String, u32)>,
+    /// The achievements of the set tracked now (emptied by every new generation): only
+    /// their unlocks get a notice.
+    tracked: HashSet<u32>,
 }
 
 impl Ra {
@@ -165,6 +172,7 @@ impl Ra {
             game: None,
             login: None,
             titles: HashMap::new(),
+            tracked: HashSet::new(),
         })
     }
 
@@ -192,6 +200,7 @@ impl Ra {
     }
 
     fn next(&mut self) -> u64 {
+        self.tracked.clear();
         self.gen += 1;
         self.gen
     }
@@ -321,6 +330,10 @@ impl Ra {
         while let Ok(n) = self.notices.try_recv() {
             match n {
                 Notice::Unlocked { account, id } => {
+                    if !self.tracked.contains(&id) {
+                        eprintln!("slot: achievements: notice for {id} dropped (not this game)");
+                        continue;
+                    }
                     let found = self.titles.get(&(account, id)).cloned();
                     out.push(RaUpdate::Unlocked {
                         title: found.as_ref().map(|(t, _)| t.clone()),
@@ -341,6 +354,8 @@ impl Ra {
         unlocked: &[u32],
         progress: Option<Vec<u8>>,
     ) -> AchievementPlan {
+        // Only ever called for the game seated now.
+        self.tracked.extend(game.achievements.iter().map(|a| a.id));
         if let Some(key) = slot_achievements::store::account::key(account) {
             for a in &game.achievements {
                 self.titles

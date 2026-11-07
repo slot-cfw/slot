@@ -286,6 +286,19 @@ impl App {
             .push_back(UnlockNotice { title, points });
     }
 
+    /// A game is being seated: notices not yet shown belong to an earlier game and are
+    /// dropped (display only; the unlocks stay on the card and are submitted as usual).
+    pub fn discard_unlock_notices(&mut self) {
+        let n = self.unlock_notices_waiting() + usize::from(self.notice_showing.is_some());
+        if n > 0 {
+            eprintln!("slot: achievements: {n} notices from an earlier game dropped");
+        }
+        self.unlock_notices.clear();
+        self.notice_wanted = None;
+        self.notice_showing = None;
+        self.hud.clear_achievement();
+    }
+
     /// The game is on screen with nothing over it.
     fn game_on_screen(&self) -> bool {
         matches!(self.phase, Phase::Playing { .. })

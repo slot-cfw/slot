@@ -968,3 +968,92 @@ fn the_unlock_notice_carries_the_title_and_points() {
     assert_eq!(n.title.as_deref(), Some("Life Leech"));
     assert_eq!(n.points, Some(1));
 }
+
+// ---------------------------------------------------------------------------------------
+// Stale unlock notices (Checkpoint D refinement): a notice belonging to an earlier game
+// never appears during a later one. Display only: the unlock stays on the card.
+
+#[test]
+fn a_late_unlock_notice_for_a_game_that_has_ended_is_dropped_and_the_unlock_kept() {
+    use slot_achievements::store::time::TimeSource;
+    let d = tmp_root_with_carts(&[STEM]);
+    let server = Server::default();
+    let mut ra = ra_with(d.path(), &server, false);
+    ra.store().log_in(Account::new("Dean", "TOKEN").unwrap());
+    ra.store()
+        .write_cache(&game_cache(&rom_hash(d.path())), &defs(30));
+    ra.game_started(console::GAMEBOY_ADVANCE, rom_of(d.path()), None);
+    assert_eq!(tracks(&mut ra, 1_000), 1);
+    // The game ends (or another starts) before the card write that announces its unlock.
+    let sink = ra.store().unlock_sink("Dean", &rom_hash(d.path()));
+    ra.game_ended();
+    sink.offer(1, slot_achievements::store::time::System.now())
+        .unwrap();
+    assert!(ra.store().settle_for_poweroff(Duration::from_secs(5)));
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        assert!(
+            !ra.poll()
+                .iter()
+                .any(|u| matches!(u, RaUpdate::Unlocked { .. })),
+            "no notice for a game no longer tracked"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let rec = ledger(d.path());
+    let rec = rec.get("dean", 1).expect("the unlock is kept on the card");
+    assert_eq!(
+        rec.status,
+        Status::Pending,
+        "and still waits to be submitted"
+    );
+    assert_eq!(ra.status().store.pending, 1);
+}
+
+#[test]
+fn a_notice_waiting_from_one_game_never_shows_in_the_next() {
+    let d = card_with_resume(true);
+    logged_in_with_cache(d.path(), 5);
+    let mut p = Pass::boot(d.path(), &Server::default(), Arc::new(Knobs::default()));
+    p.until("the game", Pass::playing);
+    // A real unlock in the first game.
+    p.ones_until(20);
+    p.until("its notice", |p| {
+        p.session.app().unlock_notice_wanted().is_some() || p.session.app().unlock_notice_visible()
+    });
+    // A menu holds the notices back, and another waits behind it.
+    p.act(Action::QuickMenu);
+    p.until("the menu", |p| p.session.app().in_game_open());
+    p.session
+        .app_mut()
+        .queue_unlock_notice(Some("Explosive Chamber".into()), Some(10));
+    assert!(p.session.app().unlock_notices_waiting() > 0);
+    p.press(Btn::B);
+    // Left without the game being shown again: eject and insert the other cart.
+    p.act(Action::Eject);
+    p.until("the carousel", |p| {
+        matches!(p.session.app().phase(), Phase::Shelf)
+    });
+    p.act(Action::ShelfRight);
+    for _ in 0..30 {
+        p.step();
+    }
+    p.act(Action::Insert);
+    p.until("the second game", Pass::playing);
+    assert_eq!(
+        p.session.app().seated_cart().map(|c| c.stem.as_str()),
+        Some("Fusion")
+    );
+    for _ in 0..120 {
+        p.step();
+        assert!(
+            p.session.app().unlock_notices_waiting() == 0
+                && !p.session.app().unlock_notice_visible(),
+            "no notice from the first game"
+        );
+    }
+    // Display only: the unlock is still on the card, waiting to be submitted.
+    let rec = ledger(d.path());
+    let rec = rec.get("dean", 1).expect("the unlock is kept");
+    assert_eq!(rec.status, Status::Pending);
+}
