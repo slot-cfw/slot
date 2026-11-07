@@ -635,10 +635,13 @@ fn a_failing_card_raises_the_alarm_keeps_the_unlock_and_retries() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(r.h.failing(), "the alarm went up");
-    assert!(r.notices.try_iter().any(|n| n == Notice::WriteFailed));
+    // Read every notice once: the failure is announced, the unlock is not (it is not on
+    // the card).
+    let early: Vec<Notice> = r.notices.try_iter().collect();
+    assert!(early.contains(&Notice::WriteFailed), "{early:?}");
     assert!(
-        r.unlocked_notices().is_empty(),
-        "no notice for an unlock not kept"
+        !early.iter().any(|n| matches!(n, Notice::Unlocked { .. })),
+        "no notice for an unlock not kept: {early:?}"
     );
     // The card comes back: the retry writes it, then the notice follows.
     std::fs::remove_file(&blocked).unwrap();
