@@ -1095,6 +1095,44 @@ fn a_log_in_cancelled_by_log_out_never_sends_the_password() {
             .all(|p| get(p, "p").is_none()),
         "the cancelled password was sent"
     );
+    assert!(
+        !r.events
+            .try_iter()
+            .any(|e| matches!(e, Event::LoginFailed(_))),
+        "no error shown for a log-in that was cancelled"
+    );
+}
+
+#[test]
+fn network_failures_before_a_puzzling_answer_do_not_count_towards_holding() {
+    let r = rig("unsurestreak");
+    let odd = Ok((200, r#"{"Success":false}"#.to_string()));
+    r.server.with(|s| {
+        drop(s.award_answers.insert(
+            1,
+            vec![
+                Err("timed out".into()),
+                Ok(fake::gateway(503)),
+                odd.clone(),
+                Err("timed out".into()),
+                odd.clone(),
+                odd,
+            ],
+        ))
+    });
+    r.unlock(1);
+    r.connect();
+    for _ in 0..5 {
+        r.quiet();
+        assert_eq!(r.status_of(1), Some(Status::Pending));
+        r.w.connected();
+    }
+    // Only the last two puzzling answers were in a row: a third is needed.
+    r.quiet();
+    assert_eq!(r.status_of(1), Some(Status::Pending));
+    assert_eq!(r.server.calls("awardachievement").len(), 6);
+    r.w.connected();
+    wait("synced", 5, || r.status_of(1) == Some(Status::Synced));
 }
 
 #[test]

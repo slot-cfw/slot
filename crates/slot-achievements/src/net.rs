@@ -35,6 +35,19 @@ const OFFLINE: &str = "Wi-Fi is not connected";
 const HOLD: &str = "waiting for network time";
 const INTERRUPTED: &str = "interrupted";
 
+/// How many puzzling answers in a row a record has had, from its last error.
+fn unsure_streak(last_error: &str) -> u32 {
+    last_error
+        .strip_prefix("unsure")
+        .map(|r| {
+            r.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
 fn not_sent(e: &str) -> bool {
     e == OFFLINE || e == HOLD || e == INTERRUPTED
 }
@@ -428,6 +441,8 @@ impl State {
         let event = match reply {
             Err(e) if e == OFFLINE => Event::LoginFailed("Connect to Wi-Fi to log in".into()),
             Err(e) if e == HOLD => Event::LoginFailed("Waiting for network time".into()),
+            // Cancelled by a later Log In, Log Out or Stop: nothing to report.
+            Err(e) if e == INTERRUPTED => return,
             Err(_) => Event::LoginFailed("Could not reach RetroAchievements".into()),
             Ok(reply) => {
                 let answer = api::parse_login(&reply);
@@ -641,7 +656,8 @@ impl State {
         for PendingUnlock {
             id,
             rom_hash: hash,
-            attempts,
+            last_error,
+            ..
         } in pending
         {
             if !self.link.connected() || self.pause.is_some() {
@@ -700,15 +716,28 @@ impl State {
                     self.paused(p);
                     return;
                 }
-                Award::Unsure(code) if attempts + 1 >= api::UNSURE_TRIES => {
-                    eprintln!(
-                        "slot: achievements: {id} held for investigation after {} tries ({code}: {:?})",
-                        attempts + 1,
-                        verdict.message
-                    );
-                    self.store.settle(&account.user, id, Status::Held, &code);
+                Award::Unsure(code) => {
+                    // Counted in the record's last error ("unsure2_..."), so only puzzling
+                    // answers in a row count: a network failure in between starts over.
+                    let streak = unsure_streak(&last_error) + 1;
+                    if streak >= api::UNSURE_TRIES {
+                        eprintln!(
+                            "slot: achievements: {id} held for investigation after {streak} puzzling answers ({code}: {:?})",
+                            verdict.message
+                        );
+                        self.store.settle(&account.user, id, Status::Held, &code);
+                    } else {
+                        self.store.attempt_failed(
+                            &account.user,
+                            id,
+                            &format!("unsure{streak}_{code}"),
+                        );
+                        self.skip_after = Some(id);
+                        self.failed(code);
+                        return;
+                    }
                 }
-                Award::Unsure(why) | Award::Retry(why) => {
+                Award::Retry(why) => {
                     self.store.attempt_failed(&account.user, id, "retry");
                     self.skip_after = Some(id);
                     self.failed(why);

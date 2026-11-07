@@ -132,6 +132,8 @@ pub struct PendingUnlock {
     pub rom_hash: String,
     /// Failed attempts so far (sent, but not settled).
     pub attempts: u32,
+    /// The last failure's code (`-` when none).
+    pub last_error: String,
 }
 
 enum Msg {
@@ -1201,6 +1203,7 @@ impl Worker {
                                 id: e.id,
                                 rom_hash: e.rom_hash.clone(),
                                 attempts: e.attempts,
+                                last_error: e.last_error.clone(),
                             })
                             .collect()
                     })

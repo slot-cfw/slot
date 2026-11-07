@@ -305,10 +305,22 @@ fn status_of(raw: RawStatus, http: u16, body: &str) -> Verdict {
     Verdict {
         http,
         result: raw.result,
-        succeeded: raw.succeeded != 0,
+        // rcheevos reads a missing "Success" as true, so any JSON without it (a proxy's,
+        // a CDN's, a maintenance page's `{}`) would look like a success. Only the
+        // server's own explicit `"Success": true` counts.
+        succeeded: raw.succeeded != 0 && says_success(body),
         message: take(raw.error_message),
         code,
     }
+}
+
+/// The body states `"Success": true` itself.
+fn says_success(body: &str) -> bool {
+    body.match_indices("\"Success\"").any(|(i, k)| {
+        let rest = body[i + k.len()..].trim_start();
+        rest.strip_prefix(':')
+            .is_some_and(|v| v.trim_start().starts_with("true"))
+    })
 }
 
 /// RAWeb's `"Code"` field, for the answers whose rcheevos parser does not read it (the
@@ -567,7 +579,8 @@ pub enum Award {
     Unsure(String),
 }
 
-/// Sent attempts after which an [`Award::Unsure`] answer is held instead of retried.
+/// [`Award::Unsure`] answers in a row after which a record is held instead of retried.
+/// Only the server's puzzling answers count, not network failures or `5xx`.
 pub const UNSURE_TRIES: u32 = 3;
 
 /// Statuses rcheevos' own client retries (rc_client.c `rc_client_should_retry`).
@@ -872,6 +885,18 @@ mod tests {
         ));
         // A success naming no achievement is this one accepted.
         assert_eq!(a(200, r#"{"Success":true}"#), Award::Synced);
+        assert_eq!(a(200, r#"{ "Success" : true }"#), Award::Synced);
+        // JSON with no "Success" at all (rcheevos would read it as a success) is never
+        // taken as one: a proxy's or maintenance page's JSON must not settle an unlock.
+        for (st, b) in [
+            (200, "{}"),
+            (404, r#"{"message":"Not Found"}"#),
+            (400, r#"{"error":"bad"}"#),
+            (200, r#"{"status":"maintenance"}"#),
+            (200, r#"{"AchievementID":42}"#),
+        ] {
+            assert!(matches!(a(st, b), Award::Unsure(_)), "{st} {b}");
+        }
         // Only the server's own 403 pauses; a captive portal's HTML 403 is retried.
         assert!(matches!(
             a(403, "<html><body>Forbidden</body></html>"),
@@ -889,6 +914,9 @@ mod tests {
         ));
         assert!(g.is_none());
         assert!(matches!(classify(&v), Outcome::Refused(_)));
+        // A proxy's `{}` is never a session that started.
+        let (v, _) = parse_session(&reply(200, "{}"));
+        assert_ne!(classify(&v), Outcome::Ok);
         let (v, _) = parse_game_sets(&reply(503, &fake::gateway(503).1));
         assert!(matches!(classify(&v), Outcome::Retry(_)));
     }
