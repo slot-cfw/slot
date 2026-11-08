@@ -43,7 +43,7 @@ slot.advance is a fork of **[slot](https://github.com/BrandonKowalski/slot)** by
 <br>
 <img src=".github/resources/screenshots/advance/0.5.0/in-game-menu.png" width="48%" alt="The in-game menu: Resume, States, Settings and Exit Game, with Resume selected">
 <img src=".github/resources/screenshots/advance/1.0.0/settings.png" width="48%" alt="Settings: Screen, Gameplay, Network On, RetroAchievements On (selected), Sleep 30 min, Date & Time and About">
-<br><sub>The <b>carousel</b> (top), the <b>in-game menu</b> (left) and <b>Settings</b> with Network and RetroAchievements on (right). Rendered by slot.advance's own drawing code with user-supplied Pokémon Unbound artwork.</sub>
+<br><sub>The <b>carousel</b> (top), the <b>in-game menu</b> (left) and <b>Settings</b> with Network and RetroAchievements on (right).</sub>
 </p>
 
 ---
