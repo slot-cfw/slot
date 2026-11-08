@@ -1,7 +1,7 @@
 //! Compiles the vendored rcheevos sources and slot.advance's small C shim into one static
-//! library. Only the parts Phase 1 uses are compiled: the runtime (achievement parsing,
-//! evaluation and progress), rc_libretro (memory maps) and what they need. The request
-//! builders (`rapi`) and the full hashing set are added when a later phase uses them.
+//! library. Only the parts slot.advance uses are compiled: the runtime (achievement parsing,
+//! evaluation and progress), rc_libretro (memory maps), the ROM hashing, and the request
+//! builders and response parsers (`rapi`) for the calls it makes. See vendor/README.md.
 
 use std::path::PathBuf;
 

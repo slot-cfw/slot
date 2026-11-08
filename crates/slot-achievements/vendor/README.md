@@ -11,7 +11,10 @@ the whole directory from the tagged upstream source and recording the new versio
 - Copied: `include/`, `src/`, `LICENSE`, `README.md`, `CHANGELOG.md`. Not copied:
   upstream's tests, validator and build files.
 - Compiled (see `../build.rs`): the runtime (`src/rcheevos/`), `rc_libretro.c`,
-  `rc_compat.c`, `rc_util.c`, `rc_version.c`, and the ROM-only parts of `src/rhash/`.
+  `rc_compat.c`, `rc_util.c`, `rc_version.c`, the ROM-only parts of `src/rhash/`
+  (`hash.c`, `hash_rom.c`, `md5.c`), and the request builders and response parsers in
+  `src/rapi/` (`rc_api_common.c`, `rc_api_runtime.c`, `rc_api_user.c`). Not compiled:
+  `rc_client`, the editor and info requests, and the disc, encrypted and zip hashing.
 
 ## libretro.h
 

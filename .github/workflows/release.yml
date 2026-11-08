@@ -68,6 +68,14 @@ jobs:
           test -f "$out/System/licenses/syncthing-LICENSE.txt"
           test -f "$out/System/licenses/syncthing.txt"
           test -f "$out/System/licenses/eff-wordlist-CC-BY-3.0.txt"
+          # RetroAchievements: rcheevos (MIT) and webpki-roots (CDLA-Permissive-2.0, which asks
+          # for its text to travel with the root certificates compiled into System/slot).
+          cmp licenses/rcheevos-MIT.txt crates/slot-achievements/vendor/rcheevos/LICENSE
+          cmp "$out/System/licenses/rcheevos-MIT.txt" licenses/rcheevos-MIT.txt
+          cmp "$out/System/licenses/webpki-roots-CDLA-Permissive-2.0.txt" licenses/webpki-roots-CDLA-Permissive-2.0.txt
+          grep -q "Community Data License Agreement - Permissive - Version 2.0" "$out/System/licenses/webpki-roots-CDLA-Permissive-2.0.txt"
+          webpki="$(awk '/^name = "webpki-roots"$/ { getline; gsub(/[^0-9.]/, ""); print }' Cargo.lock)"
+          grep -q "^webpki-roots $webpki " "$out/System/licenses/webpki-roots-CDLA-Permissive-2.0.txt"
           gpsp_src_sha="$(cat vendor/gpsp-src.sha)"
           test -f "$out/System/licenses/gpsp-${gpsp_src_sha}.tar.gz"
           test -f "$out/System/licenses/gpsp-${gpsp_src_sha}.meta"

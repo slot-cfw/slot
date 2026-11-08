@@ -2,11 +2,11 @@
 
 *Working notes for the `docs/1.0.0-release-prep` branch (Phase 7). Not user documentation. Remove this folder before merging into `main`, or keep it as a record, as for 0.5.0.*
 
-**Status (8 November 2026):** documentation prepared against `release-0.6.0` at `08261fd`, the code tested on the handheld in Phase 6 (Checkpoint E approved, Phase 6 passed). Nothing merged, tagged, released, deployed or published. The version is still 0.5.0 in `Cargo.toml`.
+**Status (8 November 2026):** Phase 7 review approved with final corrections, all made on this branch: the README bullet's progress sentence, the webpki-roots licence and release-workflow licence checks, the vendored rcheevos description, the comparison with upstream slot 1.15.1, and the version set to 1.0.0. Built on `release-0.6.0` at `08261fd`, the code tested on the handheld in Phase 6. Nothing merged, tagged, released, deployed or published.
 
 ## What this branch contains
 
-`release-0.6.0` (`08261fd`) plus documentation, screenshots, charts and their generators. No firmware, card script, workflow or website change: `git diff 08261fd <this branch>` lists only `README.md`, `documentation/`, `.github/resources/` and `crates/slot/examples/readme_100_screenshots.rs` (an example, not built into the release).
+`release-0.6.0` (`08261fd`) plus documentation, screenshots, charts and their generators, and the approved release packaging changes. No runtime change: outside documentation, `git diff 08261fd <this branch>` lists only the version (`Cargo.toml`, the ten workspace crates in `Cargo.lock`), `licenses/webpki-roots-CDLA-Permissive-2.0.txt`, the licence checks in `.github/workflows/release.yml`, comments in `crates/slot-achievements/build.rs` and `vendor/README.md`, and `crates/slot/examples/readme_100_screenshots.rs` (an example, not built into the release).
 
 | Area | Files |
 |---|---|
@@ -36,10 +36,10 @@
 Each step needs Dean's explicit approval at the release checkpoint.
 
 1. **Review** this branch (with ChatGPT if wanted).
-2. **Version:** "Set the version to 1.0.0" on `release-0.6.0`: `Cargo.toml` `[workspace.package] version` and the workspace crates in `Cargo.lock`, nothing else. The user agent then reads `slot.advance/1.0.0`. Host tests, fmt and clippy at the result.
-3. **Docs into the release branch:** merge `docs/1.0.0-release-prep` into `release-0.6.0`, so the tagged commit carries `documentation/releases/advance-1.0.0.md`.
-4. **Check the tagged tree:** `Cargo.toml` says 1.0.0; `git diff 08261fd <commit> -- crates cores card scripts .github/workflows taskfile.yml` shows only the version lines and `crates/slot/examples/readme_100_screenshots.rs`.
+2. **Version: done on this branch.** `Cargo.toml` and the ten workspace crates in `Cargo.lock` say 1.0.0; the RetroAchievements user agent reads `slot.advance/1.0.0 (Linux aarch64) rcheevos/12.5.0`. Host tests, fmt and clippy pass (the same three environment-only test failures as at Checkpoint D).
+3. **Into the release branch:** merge `docs/1.0.0-release-prep` into `release-0.6.0`, so the tagged commit carries the version, the licences, the workflow checks and `documentation/releases/advance-1.0.0.md`.
+4. **Check the tagged tree:** `Cargo.toml` says 1.0.0; `git diff 08261fd <commit> -- crates cores card scripts taskfile.yml` shows only the version lines, the two comment corrections and the screenshot example; `.github/workflows/release.yml` only the licence checks.
 5. **Tag and publish:** tag `advance-1.0.0` (or run the release workflow by hand with `release_tag` `advance-1.0.0`). The README's download link (`releases/download/advance-1.0.0/slot.advance-1.0.0-rg-sp.zip`) works only once this is published.
-6. **After publishing:** download the asset through the README's link, check the top folder `slot.advance-1.0.0-rg-sp` and that `System/licenses/` holds `rcheevos-MIT.txt`; note the asset's SHA-256.
+6. **After publishing:** download the asset through the README's link, check the top folder `slot.advance-1.0.0-rg-sp` and that `System/licenses/` holds `rcheevos-MIT.txt` and `webpki-roots-CDLA-Permissive-2.0.txt` (the workflow now fails without them); note the asset's SHA-256.
 7. **main:** merge `release-0.6.0` into `main` (separate approval).
 8. **Website:** slotadvance.com still shows the 0.5.0 battery blocks and copy (separate approval).

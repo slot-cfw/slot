@@ -514,7 +514,7 @@ RetroAchievements sends requests only while slot-net reports Wi-Fi On and connec
 | A game starts, or connects with a game waiting for its set | Achievement set and session start (the account's unlock list) |
 | An unlock is written while connected, or a retry is due | Submission |
 
-The HTTPS endpoint (`crates/slot-net/src/web.rs`) is separate from Syncthing's pinned one: host-name verification and SNI for `retroachievements.org` against Mozilla's public roots (`webpki-roots`), a DNS lookup on the worker thread, a **20 s** limit on each whole request and a **2 MB** response cap. Certificates are checked against network time, not the possibly uncorrected system clock; with no measurement and a clock earlier than the anchor, requests are held ("Waiting for network time"). The user agent is `slot.advance/<version> (Linux aarch64) rcheevos/12.5.0`. Requests and responses are built and parsed by rcheevos' `rapi`.
+The HTTPS endpoint (`crates/slot-net/src/web.rs`) is separate from Syncthing's pinned one: host-name verification and SNI for `retroachievements.org` against Mozilla's public roots (`webpki-roots` 1.0.11, data derived from the Common CA Database, CDLA-Permissive-2.0; its licence text ships as `System/licenses/webpki-roots-CDLA-Permissive-2.0.txt`), a DNS lookup on the worker thread, a **20 s** limit on each whole request and a **2 MB** response cap. Certificates are checked against network time, not the possibly uncorrected system clock; with no measurement and a clock earlier than the anchor, requests are held ("Waiting for network time"). The user agent is `slot.advance/<version> (Linux aarch64) rcheevos/12.5.0`. Requests and responses are built and parsed by rcheevos' `rapi`.
 
 ### Sleep, power and saving
 

@@ -28,7 +28,7 @@
 - **Super-efficient standby.** Hours of sleep for a few percent of the battery an hour, then a clean automatic shutdown that restores your game.
 - **Optional Wi-Fi, off by default.** Join a network from Settings only when you want it. Sleep still comes first.
 - **Syncthing built in.** Keep your Saves and States in step with your computer or home server, on your own network.
-- **RetroAchievements, off by default.** Softcore achievements on mGBA. Start a game online once, and from then on it earns achievements offline too, sent when Wi-Fi next connects.
+- **RetroAchievements, off by default.** Softcore achievements on mGBA. Start a game online once, and from then on it earns achievements offline too, sent when Wi-Fi next connects. Progress toward an achievement survives sleep and automatic resume.
 - **In-game menu.** Tap `MENU` to pause for Resume, States, Settings and Exit Game, with shader and fast-forward settings for the game you're playing.
 - **Cartridge shelf, favourites and save states.** All, Recents and Favourites shelves, five save states per game, and a carousel that reopens on your last game.
 
