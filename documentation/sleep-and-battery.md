@@ -2,7 +2,7 @@
 
 This page is the detail behind the sleep, wake-up and battery figures in the [README](../README.md). It covers how sleep has changed across slot.advance's releases, what 0.4.0 does when the lid closes, why 0.4.1 wakes faster, how the figures were obtained, how far they can be trusted, and what was checked on the device before each release. How the current release works, with the source files involved, is in the [Technical reference](technical.md).
 
-Everything here applies to the **Anbernic RG SP (2026)** (720 x 480 screen) running BaseOS 1.3.0 (Linux 4.9). Version numbers are **slot.advance** versions, not upstream slot's. **0.5.0** (tag `advance-0.5.0`) is the current release. With Wi-Fi off, the default, it sleeps and wakes as 0.4.1 and 0.4.2 do; what it adds, optional Wi-Fi and Syncthing, and how that was measured, is in [0.5.0: Wi-Fi and Syncthing](#050-wi-fi-and-syncthing). **0.4.2** (tag `advance-0.4.2`) changed nothing in sleep, wake, Wi-Fi or power management, so everything here that applies to 0.4.1 applies to it. **0.4.1** (tag `advance-0.4.1`) was released after the checks under [Validation status](#validation-status). It is 0.4.0 with one change, described in [Waking up faster in 0.4.1](#waking-up-faster-in-041). **0.4.0** (tag `advance-0.4.0`) introduced hardware sleep; **0.3.0** (tag `advance-v3`) came before it.
+Everything here applies to the **Anbernic RG SP (2026)** (720 x 480 screen) running BaseOS 1.3.0 (Linux 4.9). Version numbers are **slot.advance** versions, not upstream slot's. **1.0.0** (tag `advance-1.0.0`) is the current release. It adds RetroAchievements and changes nothing in sleep, wake, the lid, the RTC timer, Wi-Fi or power management, so everything here that applies to 0.5.0 applies to it; no sleep was measured on a 1.0.0 build, and its sleep figures are 0.5.0's. Its one battery measurement, RetroAchievements Off against On while playing, is in [1.0.0: RetroAchievements](#100-retroachievements). **0.5.0** (tag `advance-0.5.0`): with Wi-Fi off, the default, it sleeps and wakes as 0.4.1 and 0.4.2 do; what it adds, optional Wi-Fi and Syncthing, and how that was measured, is in [0.5.0: Wi-Fi and Syncthing](#050-wi-fi-and-syncthing). **0.4.2** (tag `advance-0.4.2`) changed nothing in sleep, wake, Wi-Fi or power management, so everything here that applies to 0.4.1 applies to it. **0.4.1** (tag `advance-0.4.1`) was released after the checks under [Validation status](#validation-status). It is 0.4.0 with one change, described in [Waking up faster in 0.4.1](#waking-up-faster-in-041). **0.4.0** (tag `advance-0.4.0`) introduced hardware sleep; **0.3.0** (tag `advance-v3`) came before it.
 
 ## Contents
 
@@ -12,6 +12,7 @@ Everything here applies to the **Anbernic RG SP (2026)** (720 x 480 screen) runn
 - [Waking up faster in 0.4.1](#waking-up-faster-in-041)
 - [Battery results](#battery-results)
 - [0.5.0: Wi-Fi and Syncthing](#050-wi-fi-and-syncthing)
+- [1.0.0: RetroAchievements](#100-retroachievements)
 - [Methodology and uncertainty](#methodology-and-uncertainty)
 - [Raw reports and calculations](#raw-reports-and-calculations)
 - [Validation status](#validation-status)
@@ -19,6 +20,8 @@ Everything here applies to the **Anbernic RG SP (2026)** (720 x 480 screen) runn
 ---
 
 ## Summary
+
+**On 1.0.0:** the README gives hardware sleep as **about 2% an hour**, against about 7% for semi-stock software standby. 1.0.0 did not change the sleep implementation, so that figure is the two extended 8-hour sleeps on a 0.5.0 test build described next, not a new measurement. While playing, RetroAchievements On used an estimated 503 mA against 494 mA Off in one matched pair of runs: **+9 mA (+1.8%), within measurement noise**. See [1.0.0: RetroAchievements](#100-retroachievements).
 
 **On 0.5.0:** two 8-hour sleeps on a 0.5.0 test build both read **2% an hour** on the battery gauge, one with Wi-Fi off (77% to 61%) and one with Wi-Fi on (80% to 64%). They are single runs on different nights, so they don't show identical standby use with Wi-Fi off and on in every situation. They, and the 0.5.0 development measurements, are [in their own section](#050-wi-fi-and-syncthing).
 
@@ -223,6 +226,33 @@ What these show, and what they don't:
 
 ---
 
+## 1.0.0: RetroAchievements
+
+*Measured in Phase 6 of the 1.0.0 work (developed as 0.6.0), 8 November 2026, on the test build of `release-0.6.0` at `08261fd`: the code released as 1.0.0 apart from the version number. Recalculated by [`calculate-1.0.0.py`](battery-tests/calculate-1.0.0.py).*
+
+**Asleep: not measured on 1.0.0, and nothing to measure.** 1.0.0 adds RetroAchievements and changes nothing in the sleep path: its threads are frozen with every other process during suspend, and nothing it does is part of the decision to sleep. The 1.0.0 figure in the README, about 2% an hour, is therefore the two extended 8-hour sleeps on a 0.5.0 test build ([Asleep](#asleep), V1-B and V1-D), presented as the figure for the same hardware sleep implementation. Phase 6 checked sleep and wake with RetroAchievements only lightly: lid cycles with it Off and On, all of which resumed normally.
+
+**Awake, while playing:**
+
+<p align="center">
+<img src="../.github/resources/battery/battery-awake-ra-1.0.0.svg" width="100%" alt="Estimated current while playing, from the 1.0.0 Phase 6 battery runs: about 494 mA with RetroAchievements Off (standard error 5) and 503 mA with it On, tracking 197 achievements (standard error 3). Difference +9 mA, +1.8%, standard error 6, within measurement noise. Both runs with Wi-Fi On, 80% to 71%">
+</p>
+
+| Phase 6 run (8 November 2026) | Estimated current | Game CPU | All CPUs busy |
+|---|---|---|---|
+| RetroAchievements Off | 494 mA (standard error 5) | 56.0 jiffies/s | 14.6% |
+| RetroAchievements On, tracking Pokémon Emerald's 197 achievements | 503 mA (standard error 3) | 68.3 jiffies/s | 17.7% |
+| Difference | **+9 mA (+1.8%), standard error 6** | +12.3 (+22%) | +3.1 points |
+
+- **Method.** As 0.5.0's Phase 0B: Pokémon Emerald on mGBA in its intro loop, lid open, no input, unplugged, brightness 5 and volume 25 in both runs, over a 40-minute window from the first gauge step at or below 80%. Both runs covered **80% to 71%**. One run each.
+- **Both runs had Wi-Fi On**, connected. The plan said Off; the RetroAchievements On run was taken with Wi-Fi On, and the Off run was matched to it rather than repeating it. The comparison is like for like, but the absolute currents are higher than a Wi-Fi Off run and cover a different stretch of battery from 0.5.0's Phase 0B (78% to 53%), so they are **not compared with the 0.5.0 figures** above.
+- **Verdict, by the agreed criterion:** within measurement noise, because the difference is no more than twice its standard error (here 1.5 standard errors).
+- **What the CPU figures add.** RetroAchievements checks the game's memory after every frame, and the game thread used about 22% more CPU time with it On, so a small real cost in current is plausible. **1.8% is the observed difference** in one pair of runs: neither a measured cost nor a statistically established maximum.
+- **What isn't covered.** One game, one achievement set, one pair of runs; no Wi-Fi Off pair. Gameplay with frequent unlocks or uploads was not measured separately. As before, these are estimates from the battery gauge, not electrical measurements, and **not guaranteed battery life**.
+- A first RetroAchievements Off attempt wasn't recorded, because that power-on started on the charger, which the logger correctly ignores. Starting from 70% instead was rejected, because it would have measured a lower stretch of the battery and favoured RetroAchievements On.
+
+---
+
 ## Methodology and uncertainty
 
 **Instrument.** The only measurement available on the device is the battery gauge. Its `charge_counter` is just the battery percentage multiplied by the 3,500 mAh design capacity: every reading is a multiple of 35,000 µAh. So the real resolution is one percent, **35 mAh**.
@@ -287,8 +317,9 @@ So none of the extended sleeps is converted to a current, night B included. The 
 | [`battery-tests/calculate.py`](battery-tests/calculate.py) | Recalculates every battery figure on this page from the reports and the three extended sleeps |
 | [`wake-tests/v1-first-frame-0.4.1-beta.1.txt`](wake-tests/v1-first-frame-0.4.1-beta.1.txt) | V1, 15 October 2026 (UTC): first-frame timing on the 0.4.1-beta.1 candidate, 11 wakes with Wi-Fi off and 10 with `wifi=on`, with the watcher's report and `slot.log` |
 | [`wake-tests/first-frame.py`](wake-tests/first-frame.py) | Recalculates the 0.4.1-beta.1 wake-up figures from the V1 report and the comparison with the 0.4.0 baseline (R2). R2's own report was not kept, so its summary figures are recorded in the script; its individual samples can't be recalculated |
-| [`battery-tests/charts.py`](battery-tests/charts.py) | Regenerates the battery charts (the README's hourly blocks, the observed-rate comparison, the current estimates and the 0.5.0 awake comparison) and the wake-up chart |
+| [`battery-tests/charts.py`](battery-tests/charts.py) | Regenerates the battery charts (the README's two-bar standby comparison from 1.0.0, the earlier README's hourly blocks, the observed-rate comparison, the current estimates, and the 0.5.0 and 1.0.0 awake comparisons) and the wake-up chart |
 | [`battery-tests/calculate-0.5.0.py`](battery-tests/calculate-0.5.0.py) | Recalculates the 0.5.0 figures (R3, Phase 0B, Phase 0C and V1) from the summary values in the project's reviewed results records. Their raw reports are kept in the project's working folder, not in this repository |
+| [`battery-tests/calculate-1.0.0.py`](battery-tests/calculate-1.0.0.py) | Recalculates the 1.0.0 RetroAchievements Off and On comparison (Phase 6) from the summary values in the reviewed Phase 6 results. Their raw gauge logs are kept in the project's working folder, not in this repository |
 
 The reports are unedited device output. Their own summary lines contain the two errors noted above (Test A's ±2.5 mA and Experiment 5's ±0.5 mA). `calculate.py` shows the corrected working. Run it from the repository root:
 
@@ -347,3 +378,12 @@ Link play with a second device in `wifi=on` was not retested; the code it uses i
 Test build 5 is the code released as 0.5.0, apart from the version number.
 
 0.5.0's sleep path with Wi-Fi Off is 0.4.2's, and it was not re-measured beyond 0.5.0 V1's 8-hour sleep.
+
+**1.0.0 validation.** Phase 6, on the handheld with the test build of `release-0.6.0` at `08261fd`, 8 November 2026: a RetroAchievements integration check, not a repeat of 0.5.0's validation. All four parts passed:
+
+- **Installation:** the build's checksum matched and the card was backed up first.
+- **Online:** RetroAchievements Off, with a lid cycle, behaved normally; logging in on the handheld; a legitimate unlock earned online (Kirby: Nightmare in Dream Land) appeared on the RetroAchievements website; loading a save state and rewinding gave no second notice; 30 seconds of fast-forward behaved normally.
+- **Offline:** an unlock earned with Wi-Fi off (Sonic Advance) was kept through two lid sleeps and a Power Off, sent after reconnecting, and recorded by RetroAchievements at the time it was earned.
+- **Battery and logs:** the comparison above, and logs with no RetroAchievements or sleep errors; four delayed submissions were accepted.
+
+**Not shown on the handheld, and not claimed:** saved progress toward an achievement across a cold-boot resume. Neither test game had an easily reached achievement that needs it, so it rests on host tests (progress restored at the first frame through the real app after a cold boot). Sleep and wake were checked lightly, with lid cycles in the online and offline parts, not with standalone sleep testing: 0.5.0 established it, and nothing in Phase 6 suggested a regression. No sleep battery measurement was made.

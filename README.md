@@ -15,7 +15,7 @@
 > [!IMPORTANT]
 > **Supported device: Anbernic RG SP (2026) only**: the clamshell model with the 720 x 480 display. Not compatible with the older RG35XX SP. For that model or any other Anbernic device, use upstream [slot](https://github.com/BrandonKowalski/slot).
 
-**Latest release: [slot.advance 0.5.0](https://github.com/slowphase/slot.advance/releases/latest)** · **[Download&nbsp;ZIP](https://github.com/slowphase/slot.advance/releases/download/advance-0.5.0/slot.advance-0.5.0-rg-sp.zip)**
+**Latest release: [slot.advance 1.0.0](https://github.com/slowphase/slot.advance/releases/latest)** · **[Download&nbsp;ZIP](https://github.com/slowphase/slot.advance/releases/download/advance-1.0.0/slot.advance-1.0.0-rg-sp.zip)**
 
 [Install](#installing-and-updating) · [User guide](documentation/user-guide.md) · [Release notes](documentation/release-notes.md) · [Website](https://slotadvance.com)
 
@@ -28,6 +28,7 @@
 - **Super-efficient standby.** Hours of sleep for a few percent of the battery an hour, then a clean automatic shutdown that restores your game.
 - **Optional Wi-Fi, off by default.** Join a network from Settings only when you want it. Sleep still comes first.
 - **Syncthing built in.** Keep your Saves and States in step with your computer or home server, on your own network.
+- **RetroAchievements, off by default.** Softcore achievements on mGBA. Start a game online once, and from then on it earns achievements offline too, sent when Wi-Fi next connects.
 - **In-game menu.** Tap `MENU` to pause for Resume, States, Settings and Exit Game, with shader and fast-forward settings for the game you're playing.
 - **Cartridge shelf, favourites and save states.** All, Recents and Favourites shelves, five save states per game, and a carousel that reopens on your last game.
 
@@ -51,10 +52,10 @@ slot.advance is a fork of **[slot](https://github.com/BrandonKowalski/slot)** by
 
 Close the lid and your game is saved and held in memory. Open it to carry on. If the sleep time you choose in **Settings > Sleep** (3 minutes to 8 hours) runs out first, it shuts down cleanly and restores the game at the next power-on.
 
-Hardware sleep used about 2 to 3.2% of the battery an hour in three extended sleeps on 0.4.x with Wi-Fi off, against roughly 7% for an earlier software-standby test build (ordinary 0.3.0 shuts down after three minutes). On a 0.5.0 test build, an 8-hour sleep read 2% an hour with Wi-Fi off, and another 2% an hour with Wi-Fi on.
+Hardware sleep uses about 2% of the battery an hour, against roughly 7% for semi-stock software standby (an earlier test build held in standby; ordinary 0.3.0 shuts down after three minutes). 1.0.0 keeps 0.5.0's hardware sleep unchanged, and that figure comes from two 8-hour sleeps on a 0.5.0 test build, one with Wi-Fi off and one with Wi-Fi on. Earlier extended sleeps on 0.4.x read 2 to 3.2% an hour.
 
 <p align="center">
-<img src=".github/resources/battery/battery-drain-hourly.svg" width="100%" alt="Battery used per hour with the lid closed, as 1% blocks from observed battery-gauge drops: about 7% for 0.3.0 (semi-stock) software standby, a modified test build held in standby (61% to 47% in 2 hours); about 2 to 3.2% for 0.4.x hardware sleep with Wi-Fi Off from three extended sleeps; and 2% an hour for 0.5.0 hardware sleep in one 8-hour sleep each on a 0.5.0 test build, with Wi-Fi Off (77% to 61%) and with Wi-Fi On (80% to 64%)">
+<img src=".github/resources/battery/battery-standby-1.0.0.svg" width="100%" alt="Battery used per hour with the lid closed, from battery-gauge readings: about 7% for semi-stock software standby (a modified 0.3.0 build held in standby, 61% to 47% in 2 hours) and about 2% for slot.advance 1.0.0 hardware sleep. 1.0.0 uses 0.5.0's hardware sleep unchanged; its figure comes from two 8-hour sleeps on a 0.5.0 test build, with Wi-Fi off (77% to 61%) and with Wi-Fi on (80% to 64%)">
 </p>
 
 **With Wi-Fi on**, slot.advance saves your game, then disconnects and takes Wi-Fi down before every sleep. The two 0.5.0 sleeps read the same, though that doesn't show identical standby use in every situation. Wi-Fi and Syncthing do use more battery while you play.
@@ -127,7 +128,7 @@ Every control and setting is in the **[User guide](documentation/user-guide.md)*
 
 **For developers:** [Technical reference](documentation/technical.md) · [Sleep and battery measurements](documentation/sleep-and-battery.md) · [Building](documentation/building.md)
 
-This build: **0.5.0** · [All releases](https://github.com/slowphase/slot.advance/releases)
+This build: **1.0.0** · [All releases](https://github.com/slowphase/slot.advance/releases)
 
 ---
 
@@ -144,6 +145,7 @@ slot.advance is free and open source. If you enjoy using it and would like to su
 - **[slot](https://github.com/BrandonKowalski/slot)** by Brandon T. Kowalski: the frontend this fork is built on, including the design of the in-game menu adapted here. The cart sounds are recordings of his childhood Game Boy.
 - **slots** by **[ciscosweater](https://github.com/ciscosweater)**: the Recents category is adapted from this community fork of slot, and its favourites tab inspired ours.
 - **[mGBA](https://mgba.io)** by endrift and **[gpSP](https://github.com/libretro/gpsp)** through [libretro](https://www.libretro.com): the emulation. **[AGS-102](https://github.com/BrandonKowalski/AGS-102)**, a fork of [BaseOS](https://github.com/pvaibhav/BaseOS) by @pvaibhav: the operating system slot boots on.
+- **[RetroAchievements](https://retroachievements.org)**: the achievement sets and the service they sync with. **[rcheevos](https://github.com/RetroAchievements/rcheevos)** v12.5.0 (MIT) by the RetroAchievements team is included unmodified to evaluate achievements, identify games and build server requests; its licence is in `System/licenses/`. slot.advance's achievement support builds on the design of @pvaibhav's [slot fork](https://github.com/pvaibhav/slot) (GPL-3.0).
 - **[Syncthing](https://syncthing.net)** (Mozilla Public License 2.0) by the Syncthing contributors: included unmodified for syncing Saves and States. Its licence and authors are in `System/licenses/`. Web interface passwords use the **[EFF Large Wordlist](https://www.eff.org/deeplinks/2016/07/new-wordlists-random-passphrases)** (CC BY 3.0 US).
 - **[Open Sans](https://github.com/googlefonts/opensans)** (SIL Open Font License) and **[Nerd Fonts](https://www.nerdfonts.com)** symbols by Ryan L McIntyre (MIT), including the favourite star. The LCD3x screen shader's panel mask is derived from **gigaherz's LCD3x** ([shader credits and licences](licenses/shaders.txt)).
 - The cartridge-label photographs in the [starter pack](artwork/gba-originals) are credited to their photographers in its README. Both slot and slot.advance were built with **Claude** (see [AI disclosure](#ai-disclosure)).

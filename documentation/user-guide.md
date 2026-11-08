@@ -1,6 +1,6 @@
 # slot.advance user guide
 
-This guide explains how to use slot.advance on the **Anbernic RG SP (2026)**: the carousel, playing, the in-game menu, save states, sleep, settings, Wi-Fi, Syncthing, link play, the files it keeps and what to do when something goes wrong. It describes the current stable release. What changed in each version is in the [release notes](release-notes.md).
+This guide explains how to use slot.advance on the **Anbernic RG SP (2026)**: the carousel, playing, the in-game menu, save states, sleep, settings, Wi-Fi, Syncthing, RetroAchievements, link play, the files it keeps and what to do when something goes wrong. It describes the current stable release. What changed in each version is in the [release notes](release-notes.md).
 
 New to slot.advance? Start with the [README](../README.md), which covers what it is and [how to install it](../README.md#installing-and-updating). If you want to know how sleep and networking work inside, see the [Technical reference](technical.md); for how sleep and battery use were tested, see [Sleep and battery: how it evolved and how it was measured](sleep-and-battery.md).
 
@@ -17,14 +17,15 @@ New to slot.advance? Start with the [README](../README.md), which covers what it
 7. [Game titles](#game-titles)
 8. [Wi-Fi and networks](#wi-fi-and-networks)
 9. [Syncthing: syncing Saves and States](#syncthing-syncing-saves-and-states)
-10. [Link play](#link-play)
-11. [Battery](#battery)
-12. [Files on the games card](#files-on-the-games-card)
-13. [Going back](#going-back)
-14. [Troubleshooting](#troubleshooting)
-15. [Known limitations](#known-limitations)
-16. [Reporting a problem](#reporting-a-problem)
-17. [Differences from slot](#differences-from-slot)
+10. [RetroAchievements](#retroachievements)
+11. [Link play](#link-play)
+12. [Battery](#battery)
+13. [Files on the games card](#files-on-the-games-card)
+14. [Going back](#going-back)
+15. [Troubleshooting](#troubleshooting)
+16. [Known limitations](#known-limitations)
+17. [Reporting a problem](#reporting-a-problem)
+18. [Differences from slot](#differences-from-slot)
 
 ---
 
@@ -102,7 +103,7 @@ Shader, colour correction and fast-forward changes made in game are saved **for 
 
 <p align="center">
 <img src="../.github/resources/screenshots/advance/0.5.0/in-game-menu.png" width="48%" alt="The in-game menu: Resume, States, Settings and Exit Game, with Resume selected">
-<img src="../.github/resources/screenshots/advance/0.5.0/in-game-settings.png" width="48%" alt="Settings opened from a game: Screen, Gameplay, Network Off, Sleep 30 min and About, with no Date and Time row">
+<img src="../.github/resources/screenshots/advance/1.0.0/in-game-settings.png" width="48%" alt="Settings opened from a game: Screen, Gameplay, Network Off, RetroAchievements Off, Sleep 30 min and About, with no Date and Time row">
 <br><sub>The <b>in-game menu</b> (left), and <b>Settings</b> opened from it (right). Date &amp; Time isn't offered during a game</sub>
 </p>
 
@@ -136,9 +137,10 @@ While the menu or any page under it is open:
 Settings in a game is the carousel's Settings, with a few differences:
 
 - **Four rows belong to the game you're playing:** the screen **shader**, **Color Correction**, **Fast Forward** speed and **Fast Forward Sound**. They show and change that game's own value, just as the `SELECT` shortcuts do. Changing them on the carousel instead changes the default for games you have never changed. See [Per-game settings](#per-game-settings).
-- **Every other row is the same global setting** as on the carousel: Rewind, Turbo Buttons, Rumble, Auto Save on Eject, Show Game Titles, Sleep and Network.
+- **Every other row is the same global setting** as on the carousel: Rewind, Turbo Buttons, Rumble, Auto Save on Eject, Show Game Titles, Sleep, Network and RetroAchievements.
 - **Hidden during a game:** **Date & Time** (the clock is only set with no game running), the **other platform's shader** (a GBA game shows only GBA Shader; a GB or GBC game only GB / GBC Shader) and **GB Palettes** (it only takes effect when a game starts). All three are on the carousel's Settings as usual.
 - **Network** works in a game. Switching Wi-Fi on still needs a restart; if you choose **Restart** from a game, the game is saved first, and if it can't be saved, slot.advance doesn't restart and says so.
+- **RetroAchievements** works in a game too, but switching it on or logging in there doesn't track the game you're playing: tracking starts with the next game started. See [When tracking starts](#when-tracking-starts).
 
 <p align="center">
 <img src="../.github/resources/screenshots/advance/0.5.0/in-game-settings-screen.png" width="48%" alt="The Screen page in a GBA game: GBA Shader LCD3x, Color Correction On, Show Game Titles Off">
@@ -241,6 +243,7 @@ Press `MENU` on the carousel. Most of Settings is also available in a game, thro
 | GBA Shader, GB / GBC Shader, Color Correction, GB Palettes | Settings > Screen | As in slot. In a game, the shader and colour correction apply to that game only |
 | Fast Forward, Fast Forward Sound, Rewind, Turbo Buttons, Rumble, Auto Save on Eject | Settings > Gameplay | As in slot. In a game, fast-forward speed and sound apply to that game only |
 | Network | Settings > Network | Wi-Fi Off (default) / On, saved networks and Syncthing. See [Wi-Fi and networks](#wi-fi-and-networks) |
+| RetroAchievements | Settings > RetroAchievements | Off (default) / On, Log In and Log Out, and a status line. See [RetroAchievements](#retroachievements) |
 | Sleep | Settings > Sleep | `3 min`, `15 min`, `30 min` (default), `1 hr`, `2 hr`, `8 hr` |
 | Date & Time | Settings > Date & Time | As in slot. Carousel only. With Wi-Fi on, the clock is also set from the network |
 | About | Settings > About | The version, the number of games, free space on the games card, the battery, slotadvance.com and the credits |
@@ -402,6 +405,124 @@ This is a known limitation, not a guarantee that every possible edit is kept: in
 
 ---
 
+## RetroAchievements
+
+[RetroAchievements](https://retroachievements.org) is a free community service that adds achievements to classic games. slot.advance can track them as you play and send them to your RetroAchievements account. It is **off by default**, and nothing to do with it runs until you switch it on.
+
+<p align="center">
+<img src="../.github/resources/screenshots/advance/1.0.0/settings.png" width="48%" alt="Settings on the carousel: Screen, Gameplay, Network On, RetroAchievements On (selected), Sleep 30 min, Date and Time, and About">
+<img src="../.github/resources/screenshots/advance/1.0.0/retroachievements-up-to-date.png" width="48%" alt="The RetroAchievements screen: RetroAchievements On, Account PLAYER1, and the status Up to date">
+<br><sub>The <b>RetroAchievements</b> row in Settings (left), and its screen when logged in (right). The account name is an invented example</sub>
+</p>
+
+### What you need
+
+- **A RetroAchievements account.** Make one at [retroachievements.org](https://retroachievements.org). slot.advance logs in with your **user name**, not your email address.
+- **Wi-Fi switched on and connected**, to log in and the first time each game is played with achievements (see [When tracking starts](#when-tracking-starts)). After that, the game earns achievements offline too.
+- **mGBA**, the default emulator. GBA, Game Boy and Game Boy Color games are all tracked on mGBA. Games running on gpSP are not tracked.
+- **A game file RetroAchievements recognises.** It identifies a game by its exact file, so a different revision or a ROM hack may have no achievements. With no achievement set for the file, nothing is tracked and no notice appears.
+
+slot.advance supports **Softcore** only: save states, rewind and fast-forward stay available, and Softcore points are what you earn. There is no Hardcore mode, no leaderboards and no list of achievements on the handheld; see them on the RetroAchievements website.
+
+### Turning it on and logging in
+
+1. Switch **Wi-Fi** on and join a network (see [Wi-Fi and networks](#wi-fi-and-networks)).
+2. Open **Settings > RetroAchievements** and set the first row to **On**.
+3. Choose **Account** (it shows **Log In**) and press `A`.
+4. Type your **user name** on the on-screen keyboard and choose **Next** (or press `START`).
+5. Type your **password** and choose **Log In** (or press `START`). The password is hidden; `Y` shows it, as for Wi-Fi.
+6. **Logged in as** your name appears, with the reminder that achievements are tracked **from the next game started**. Press `A`.
+
+<p align="center">
+<img src="../.github/resources/screenshots/advance/1.0.0/retroachievements-user-name.png" width="48%" alt="Log In, step one: the on-screen keyboard asking for the user name, with the hint Your user name, not your email address">
+<img src="../.github/resources/screenshots/advance/1.0.0/retroachievements-logged-in.png" width="48%" alt="Logged in as Player1. Achievements are tracked from the next game started.">
+<br><sub>Typing the <b>user name</b> (left), and <b>logged in</b> (right)</sub>
+</p>
+
+If Wi-Fi isn't connected, choosing **Log In** says **Connect to Wi-Fi to log in** instead. If the log-in fails, slot.advance says why (a wrong user name or password, RetroAchievements not answering, or the reason RetroAchievements gave) and keeps the user name for another try.
+
+**Your password** is sent once, over an encrypted connection, to retroachievements.org, and is then wiped from memory. It is never stored or written to `slot.log`. What the games card keeps is your user name and a **login token** from RetroAchievements, in `Config/retroachievements/account.txt`. The token is not encrypted (the card's file system has no way to protect it): anyone with your games card could use it to submit achievements as you, though it is not your password. **Log Out** deletes it from the card, but RetroAchievements keeps that token valid until it expires, a year after it was last used.
+
+### When tracking starts
+
+**A game is tracked from the moment it starts:** when you insert its cart on the carousel, or when it resumes at power-on. It must start with RetroAchievements **On** and an account **logged in**.
+
+- **Switching RetroAchievements on, or logging in, while a game is running doesn't track that game.** To track it, exit the game and start it again (or Restart, if the card holds only one game).
+- **The first time a game is played with achievements, start it online.** slot.advance needs to fetch the game's achievement definitions from RetroAchievements once, so Wi-Fi must be on and connected. If the game starts while Wi-Fi is still connecting (for example just after power-on), tracking begins as soon as it connects. A game started with Wi-Fi off, whose definitions have never been fetched, isn't tracked in that session.
+- **After that first online start, the definitions are kept on the card**, and the game earns achievements offline too, every time it starts, including with Wi-Fi off.
+- If RetroAchievements changes a game's achievements, the new set is fetched in the background at the next online start and used **from the start after that**, never part-way through a game.
+
+### Playing offline
+
+- **An achievement earned offline is written to the card before its notice appears.** It is kept through sleep, the timed shutdown, Power Off and restarts.
+- **It is sent automatically the next time Wi-Fi is on and connected.** RetroAchievements never switches Wi-Fi on by itself and never delays sleep: if the lid closes while something is being sent, it is simply sent again later.
+- **The date RetroAchievements records** is when you earned it, as long as slot.advance can tell that time reliably: always within the same session, and after a restart when the clock was checked against network time. RetroAchievements accepts a date at most **14 days** back, so an achievement sent later than that is dated 14 days before it was sent. If the time can't be traced (the clock was never set from the network, or was changed by hand in between), it is dated when it is sent. The achievement and its points are awarded in every case.
+- **The status line** shows how many are waiting, and **Sent when Wi-Fi connects** while you're offline.
+
+<p align="center">
+<img src="../.github/resources/screenshots/advance/1.0.0/retroachievements-waiting.png" width="48%" alt="The RetroAchievements screen: On, Account PLAYER1, and the status 2 achievements waiting to sync, Sent when Wi-Fi connects">
+<img src="../.github/resources/screenshots/advance/1.0.0/achievement-notice.png" width="48%" alt="A game picture with the one-line notice in the top bar: ACHIEVEMENT UNLOCKED: HALL OF FAME (10 POINTS)">
+<br><sub>Two achievements <b>waiting to sync</b> (left), and an <b>unlock notice</b> over a game (right). The account, counts and achievement are invented examples; the game picture is user-supplied Pokémon Unbound artwork</sub>
+</p>
+
+### Unlock notices
+
+- When you earn an achievement, a one-line notice appears in the top bar, such as **ACHIEVEMENT UNLOCKED: HALL OF FAME (10 POINTS)**, for about 3 seconds. A long title is shortened; the points are always shown.
+- It appears only once the achievement is safely on the card.
+- Several at once are shown one after another. A notice never appears over a menu: it waits until the game is back on screen.
+- A notice still waiting when you exit a game is dropped rather than shown in the next one. The achievement itself is kept and sent as usual.
+- There are no badges or sounds.
+
+### Save states, rewind and fast-forward
+
+- **Fast-forward:** every frame is checked, so achievements work as at normal speed.
+- **Loading a save state, or rewinding,** starts any achievement in progress again from that point. An achievement whose goal is already met in the loaded moment must first become unmet before it can unlock, so loading a state never unlocks anything by itself, and an achievement you have already earned is never shown or sent again.
+- **Progress toward an achievement** (a counter, or a goal met over many frames) is kept while the RG SP (2026) sleeps. It is also saved with the game's suspend slot, so it carries on after a timed shutdown or Power Off when the game resumes at the next power-on, for the same account. If that saved progress can't be used, for example because the suspend slot came from another device through Syncthing, progress starts again; nothing is unlocked by mistake and nothing earned is lost.
+
+### The status line
+
+The line below the rows shows one thing at a time, the most important first. It is blank while RetroAchievements is Off.
+
+| Status | What it means |
+|---|---|
+| **Up to date** | Nothing is waiting to be sent |
+| **N achievements waiting to sync** | Earned and kept on the card, not sent yet. **Sent when Wi-Fi connects** is added while you're offline |
+| **Not logged in** | Log in to track games |
+| **Log in again** | RetroAchievements no longer accepts the saved login. Choose **Account** to log out, then log in again. Achievements waiting to sync are kept |
+| A message from RetroAchievements, such as **Verify your RetroAchievements email address** | RetroAchievements is refusing achievements from your account for that reason. Sort it out on the website; slot.advance tries again at the next connection. Nothing is dropped |
+| **RetroAchievements does not accept this version** | This slot.advance release is refused by RetroAchievements. Nothing is dropped; update when a fix is released |
+| **Waiting for network time** | slot.advance waits until the clock has been checked against network time, so dates and secure connections are right. Usually a few seconds after connecting |
+| **N achievements held for investigation** | RetroAchievements reported a fault in how slot.advance sent them. They are kept on the card, not retried by themselves, and sent again after an update. Please [report it](#reporting-a-problem) |
+| **Some achievement records could not be read** | The record of achievements on the card was damaged. Everything readable was recovered and the damaged file was kept beside it; a second line says how many records were lost. Shown until you have seen it |
+| **This game needs mGBA for achievements** | The game is running on gpSP. Choose mGBA with `START` on the carousel |
+| **Not available during SlotLink** | Link play doesn't track achievements |
+
+### Logging out, and more than one account
+
+<p align="center">
+<img src="../.github/resources/screenshots/advance/1.0.0/retroachievements-log-out.png" width="48%" alt="Log out of Player1? 2 achievements will be kept on this card. They'll sync when Player1 logs in again.">
+<img src="../.github/resources/screenshots/advance/1.0.0/retroachievements-off.png" width="48%" alt="The RetroAchievements screen switched Off: Account greyed out and no status">
+<br><sub><b>Log Out</b> asks first (left), and RetroAchievements <b>Off</b>, the default (right)</sub>
+</p>
+
+- **Log Out** (choose **Account** when logged in) asks first and says how many achievements are waiting. They stay on the card and are sent when that account logs in again. Tracking of a running game stops at once.
+- **To change account**, log out, then log in as the other user. Each account's achievements and progress are kept apart: nothing from one account is ever used or sent for another. Achievement definitions are shared, so a game fetched under one account also works offline for another.
+
+### Switching it off
+
+Set the first row of **Settings > RetroAchievements** to **Off**. Tracking stops at once, and achievements already earned are kept. With it off, slot.advance does nothing for RetroAchievements: no tracking, no network use and no files touched. Its files stay on the card, and switching it on again tracks from the next game started.
+
+### Battery and sleep
+
+- RetroAchievements never runs while the RG SP (2026) sleeps and never delays sleep, the automatic save or the timed shutdown. A manual **Power Off** or **Restart** waits at most a quarter of a second for an achievement still being written to the card; the low-battery shutdown never waits.
+- **While playing**, in one matched test (Pokémon Emerald, Wi-Fi on in both runs), the estimated current was 494 mA with RetroAchievements off and 503 mA with it on: 9 mA (1.8%) more, within the test's measurement noise. It does use a little more CPU, so a small real cost is plausible. See [Sleep and battery](sleep-and-battery.md#100-retroachievements).
+
+### Where it keeps its files
+
+Everything is in `Config/retroachievements/` on the games card: your login (`account.txt`), the record of achievements earned (`unlocks.txt`), each game's cached definitions and each account's progress. It is outside `Saves` and `States`, so Syncthing never syncs it. Don't share `Config/retroachievements/` or a copy of the whole `Config` folder, because `account.txt` holds your login token.
+
+---
+
 ## Link play
 
 Link play (the link cable and the wireless adapter) runs over Wi-Fi between two devices running slot. With Wi-Fi off, the link shortcut shows **Link Off**.
@@ -435,6 +556,8 @@ Each banner appears once per discharge, in game or on the carousel. Nothing appe
 
 **While playing,** Wi-Fi and Syncthing use extra battery. In one development test with the same game and settings, the estimated current was about 445 mA with Wi-Fi off, 474 mA with Wi-Fi on and connected, and 501 mA with Syncthing also syncing Saves and States: roughly 7.9, 7.4 and 7.0 hours from a full battery for that test. These are estimates from the battery gauge for one workload, not guaranteed battery life. If you don't need syncing, Wi-Fi off gives the longest play.
 
+**RetroAchievements** added an estimated 9 mA (1.8%) in one matched play test, within measurement noise; see [Battery and sleep](#battery-and-sleep) under RetroAchievements.
+
 How much battery sleep uses is under [Sleep duration](#sleep-duration), and what was measured is in [Sleep and battery](sleep-and-battery.md).
 
 ---
@@ -445,12 +568,13 @@ How much battery sleep uses is under [Sleep duration](#sleep-duration), and what
 
 | File or folder | What it holds |
 |---|---|
-| `Config/slot.state` | Your settings, including `sleep_minutes`, `show_titles`, `wifi` and `syncthing`. |
+| `Config/slot.state` | Your settings, including `sleep_minutes`, `show_titles`, `wifi`, `syncthing` and `retroachievements`. |
 | `Config/favourites.txt` | Your favourites, one per line, e.g. `GBA/Mother 3 (Japan)`. Safe to edit on a computer. |
 | `Config/recents.txt` | Recently played games, newest first. |
 | `Config/game_profiles.txt` | Each game's own shader, colour correction and fast-forward choices. Delete a game's lines to put it back on the defaults. |
 | `Config/wifi.txt` | Saved Wi-Fi networks and their network keys (not encrypted; see [Saved passwords](#saved-passwords)). Only there once you've joined a network. |
 | `Config/syncthing/` | Syncthing's settings, keys, database and log. Only there once Syncthing has been turned on. |
+| `Config/retroachievements/` | Your RetroAchievements login token (not encrypted), the record of achievements earned, cached achievement definitions and each account's progress. Only there once RetroAchievements has been turned on. See [Where it keeps its files](#where-it-keeps-its-files). |
 | `System/bootlogo.bmp` | The slot.advance boot logo. Put your own 24-bit `.bmp` at `Config/bootlogo.bmp` to use that instead. See [artwork/bootlogo](../artwork/bootlogo). |
 | `States/GBA/<core>/<game>/` | Up to five save states, named by the time they were saved, plus `resume.state`, the suspend slot used when the lid closes. |
 | `States/GBA/<core>/<game>/older/` | States moved out of the switcher when a game had more than five from an earlier version. Nothing is deleted. |
@@ -459,7 +583,7 @@ How much battery sleep uses is under [Sleep duration](#sleep-duration), and what
 | `slot.log`, `slot.log.1` | What slot.advance did this session and the one before, including each sleep and wake. The first line names the exact build: `slot advance` followed by the version, the commit and the build date. |
 | `crash/` | Only appears if slot.advance itself has crashed: `cores.log` (one line per crash), the log of each of the last five crashed sessions (`slot-<date>_<time>.log`), and the most recent crash's `slot.core` and `slot.maps` for diagnosis. Safe to delete. |
 
-The `.txt` files, `slot.state` and `syncthing` live in `Config/`, so replacing `System/` on an update leaves them alone.
+The `.txt` files, `slot.state`, `syncthing` and `retroachievements` live in `Config/`, so replacing `System/` on an update leaves them alone.
 
 The slot.advance **boot logo** appears from the second power-on: on the first start, slot writes it to the system card for the next boot, keeping the stock picture as a backup.
 
@@ -478,9 +602,11 @@ All of a download's files are in its `System` folder: the slot.advance program (
 
 As when upgrading, only the contents of `System` need copying. On a Mac, don't drag the download's top-level folders (`Games`, `Saves`, `States` and so on) onto the card's folders of the same name: Finder's **Replace** would swap a whole folder for an empty one.
 
-**Switch Wi-Fi off in 0.5.0 before going back** to an earlier release. Releases before 0.5.0 read Wi-Fi On as their old hidden link-play setting: they keep the Wi-Fi driver loaded and the radio powered, don't take Wi-Fi down before sleeping as 0.5.0 does, and can leave the screen dark after a Restart until `POWER` is held, the fault 0.5.0 fixed.
+**Switch Wi-Fi off before going back** to a release earlier than 0.5.0. Releases before 0.5.0 read Wi-Fi On as their old hidden link-play setting: they keep the Wi-Fi driver loaded and the radio powered, don't take Wi-Fi down before sleeping as 0.5.0 does, and can leave the screen dark after a Restart until `POWER` is held, the fault 0.5.0 fixed.
 
-Releases before 0.5.0 have no Wi-Fi menu or Syncthing. Going back to one leaves `Config/wifi.txt`, `Config/syncthing/` and Syncthing's files in `System` in place, unused (if you later return to 0.5.0, switch Syncthing on again: earlier releases drop that setting); delete `Config/wifi.txt` if you no longer want your network keys on the card. Before 0.5.0, a `wifi=on` line in `Config/slot.state` kept the radio on for link play.
+Releases before 1.0.0 have no RetroAchievements. Going back to one leaves `Config/retroachievements/` on the card, unused: achievements waiting to sync stay there and are sent when you return to 1.0.0 or later with RetroAchievements on and Wi-Fi connected (switch it on again then: earlier releases drop that setting). Delete `Config/retroachievements/account.txt` if you no longer want your login token on the card (that also logs you out, and loses nothing else).
+
+Releases before 0.5.0 have no Wi-Fi menu or Syncthing. Going back to one leaves `Config/wifi.txt`, `Config/syncthing/` and Syncthing's files in `System` in place, unused (if you later return to 0.5.0 or later, switch Syncthing on again: earlier releases drop that setting); delete `Config/wifi.txt` if you no longer want your network keys on the card. Before 0.5.0, a `wifi=on` line in `Config/slot.state` kept the radio on for link play.
 
 **Program only.** Copying just `System/slot` from an earlier release over `System/slot` on the card, or renaming the `slot.previous` you kept when upgrading back to `slot`, changes the program but leaves the newer cores and scripts in place. That mixed install is fine for a quick comparison, but it isn't the release as it was tested: for example, 0.4.2 also changed the gpSP core and the crash-capture script. Use a complete rollback before reporting a problem, because the version on the About screen and in `slot.log` names only the program.
 
@@ -512,6 +638,10 @@ Releases before 0.5.0 have no Wi-Fi menu or Syncthing. Going back to one leaves 
 
 **A save seems older than expected after syncing.** See [File times and conflict copies](#file-times-and-conflict-copies).
 
+**A game isn't earning achievements.** Check, in order: RetroAchievements is **On** and an account is logged in (**Settings > RetroAchievements**); the game was started **after** that (switching it on or logging in during a game doesn't track that game); the game has been started once **with Wi-Fi connected**, so its achievements could be fetched; it runs on **mGBA**; and RetroAchievements has an achievement set for that exact game file. Then exit the game and start it again. See [When tracking starts](#when-tracking-starts).
+
+**My offline achievements haven't appeared on the website.** They are sent only while Wi-Fi is on and connected, and the status line shows how many are waiting. If it shows **Log in again**, a message from RetroAchievements or **Waiting for network time**, see [The status line](#the-status-line).
+
 **The link shortcut shows Link Off.** Wi-Fi is off. See [Link play](#link-play).
 
 **I want to go back to an earlier version.** See [Going back](#going-back).
@@ -539,6 +669,11 @@ Releases before 0.5.0 have no Wi-Fi menu or Syncthing. Going back to one leaves 
 - **After joining a link session, your game isn't saved until the cart comes out.** No reminder appears on screen yet. [Details](#if-you-join-a-session).
 - **If a save or suspend slot can't be read, that game isn't saved until the cart is put in again**, so a file the card failed to read is never overwritten. The red card band shows meanwhile. [Details](#when-a-save-cant-be-read).
 - **The sleep timer always ends with a shutdown**, even on the charger. The game is restored at the next power-on.
+- **RetroAchievements is Softcore only**, on mGBA only: no Hardcore mode, leaderboards, Rich Presence, badges or list of achievements on the handheld, and no tracking on gpSP or during link play.
+- **A game's achievements must be fetched online once** before it can earn them offline, and switching RetroAchievements on or logging in during a game tracks only from the next game started. [Details](#when-tracking-starts).
+- **Achievements sent more than 14 days after they were earned** are dated 14 days before sending, a limit set by RetroAchievements. [Details](#playing-offline).
+- **The RetroAchievements login token is not encrypted** in `Config/retroachievements/account.txt`, and stays valid on RetroAchievements' side after Log Out until it expires.
+- **Saved progress toward an achievement across a power-off** was checked with automated tests, not yet on the handheld. Unlocks themselves were checked on the handheld online and offline.
 
 ---
 
@@ -546,21 +681,22 @@ Releases before 0.5.0 have no Wi-Fi menu or Syncthing. Going back to one leaves 
 
 1. **Don't power on again yet.** `slot.log` and `slot.log.1` are replaced each time slot.advance starts, so the record of the problem is on the card only until the next start or two.
 2. Power off, take the games card (SD2) out and put it in your computer. Copy `slot.log` and `slot.log.1` from the top of the card somewhere safe. If there is a `crash` folder, copy `crash/cores.log` and the newest `crash/slot-….log` too. For a Syncthing problem, also copy `Config/syncthing/syncthing.log`.
-3. [Open an issue](https://github.com/slowphase/slot.advance/issues/new/choose) and choose **Bug report**. Say which version you're on (the first line of `slot.log`), what you were doing and what you saw, then drag the log files into the issue. Leave out `crash/slot.core`: it is large, and only needed if asked for. Never attach `Config/wifi.txt` or other files from `Config/syncthing/`: they hold your network keys and Syncthing's private keys. `slot.log` names the Wi-Fi networks you joined, but never their passwords.
+3. [Open an issue](https://github.com/slowphase/slot.advance/issues/new/choose) and choose **Bug report**. Say which version you're on (the first line of `slot.log`), what you were doing and what you saw, then drag the log files into the issue. Leave out `crash/slot.core`: it is large, and only needed if asked for. Never attach `Config/wifi.txt`, other files from `Config/syncthing/`, or `Config/retroachievements/account.txt`: they hold your network keys, Syncthing's private keys and your RetroAchievements login token. `slot.log` names the Wi-Fi networks you joined, but never their passwords.
 
 ---
 
 ## Differences from slot
 
-This compares slot.advance 0.5.0 with **slot 1.11.0** (released 28 October 2026), upstream's latest release when this comparison was checked on 29 October 2026. Later upstream releases aren't reflected here. slot.advance 0.5.0's fixes from upstream were checked against 1.10.0; 1.11.0 changed none of the rows below.
+This compares slot.advance 1.0.0 with **slot 1.11.0** (released 28 October 2026), upstream's latest release when this comparison was checked on 29 October 2026. Later upstream releases aren't reflected here. slot.advance's fixes from upstream were checked against 1.10.0; 1.11.0 changed none of the rows below. 1.0.0 adds RetroAchievements; the other rows are as for 0.5.0.
 
-**Why choose slot.advance:** you play GBA games on an RG SP (2026) and want real hardware sleep: close the lid and the game waits in memory for hours, opening it carries straight on, and a timed shutdown keeps the game safe. Wi-Fi stays off unless you want it, and Syncthing is built in for your saves and states. **Why choose slot:** you want its themes, wallpapers and bezels, remappable controls, screenshots or frame blending, or you have a different Anbernic handheld.
+**Why choose slot.advance:** you play GBA games on an RG SP (2026) and want real hardware sleep: close the lid and the game waits in memory for hours, opening it carries straight on, and a timed shutdown keeps the game safe. Wi-Fi stays off unless you want it, Syncthing is built in for your saves and states, and RetroAchievements is there if you want it, offline too. **Why choose slot:** you want its themes, wallpapers and bezels, remappable controls, screenshots or frame blending, or you have a different Anbernic handheld.
 
 | | slot 1.11.0 | slot.advance |
 |---|---|---|
 | Lid closed | Software standby: the screen goes dark but the system keeps running, and it powers off after the **Lid Off** time, from 1 to 30 minutes | **Real hardware sleep** (suspend-to-RAM). Opening the lid carries on; it shuts down after the time set in **Settings > Sleep**, from 3 minutes to 8 hours |
 | Wi-Fi | On whenever BaseOS starts it | **Off** by default; switched on, joined and forgotten in **Settings > Network**, and taken down before every sleep. See [Wi-Fi and networks](#wi-fi-and-networks) |
 | Syncing saves | Not built in | **Syncthing** for Saves and States, set up in a browser |
+| RetroAchievements | Not built in | **Softcore achievements** on mGBA, off by default, with offline tracking for games fetched online once |
 | Unused USB host controllers | On | **Off** |
 | In-game menu | Resume (with Undo Save or Undo Load for 30 seconds after one), States, Screenshots (once you have taken one), Settings and Exit Game, with a short Settings list of screen and gameplay rows | **Resume, States, Settings and Exit Game**, with the **full Settings** in a game (Date & Time, GB Palettes and the other platform's shader hidden), and the shader, colour correction and fast-forward rows **changing that game only**. `B` and `MENU` go back one level |
 | Save states | 10 per game; deleting asks first (`Y`, then `X`) | **5** per game; `Up` / `Down` or `Left` / `Right`; deleting asks first (`Y`, then `Y`) |

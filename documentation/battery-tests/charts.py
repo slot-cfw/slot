@@ -4,7 +4,9 @@
 Run from the repository root:  python3 documentation/battery-tests/charts.py
 
 Every figure comes from documentation/battery-tests/calculate.py and the raw reports beside it,
-except the 0.5.0 figures (the V1 sleeps and the awake chart), which come from calculate-0.5.0.py.
+except the 0.5.0 figures (the V1 sleeps and the awake chart), which come from calculate-0.5.0.py,
+and the 1.0.0 RetroAchievements comparison, which comes from calculate-1.0.0.py. The README's
+two-bar chart (1.0.0) uses Test B and the 0.5.0 V1 sleeps: no sleep was measured on 1.0.0.
 Each chart sits on its own dark card, so it reads the same in GitHub's light and dark
 themes. Caveats are drawn inside the card, directly under the data they qualify.
 """
@@ -18,7 +20,7 @@ GRID = "#2E2C38"
 INK = "#EEECF4"
 INK2 = "#C2BFD0"
 INK3 = "#A3A0B3"
-ACCENT = "#8B7CF6"   # lilac: hardware sleep in the current release (0.5.0)
+ACCENT = "#8B7CF6"   # lilac: the current sleep implementation (0.5.0, unchanged in 1.0.0) and 1.0.0
 HIST = "#6A60A8"     # muted lilac: hardware sleep in earlier releases (0.4.x)
 CONTEXT = "#5C596C"  # earlier generations
 MID = "#7A7690"
@@ -66,8 +68,60 @@ def labelled(x, y, name, note, size=18):
             f'<tspan dx="10" font-size="15" font-weight="400" fill="{INK3}">{esc(note)}</tspan></text>')
 
 
-# ---------------------------------------------------------------- hourly drain (README, website)
+# ---------------------------------------------------------------- standby, two bars (README, 1.0.0)
+# The front-page comparison from 1.0.0: semi-stock software standby against slot.advance's
+# hardware sleep. 1.0.0 did not change the sleep implementation (only RetroAchievements was
+# added, and it never runs during sleep), so its bar is the extended 0.5.0 sleeps: two
+# 8-hour sleeps on 0.5.0 test build 1, both 2.0% an hour (V1-B Wi-Fi Off, V1-D Wi-Fi On).
+# No sleep was measured on a 1.0.0 build. The detailed history stays in hourly() and rates().
+TEST_B = (14, 7203)   # 0.3.0 (semi-stock) software standby, Test B: 61% to 47% in 2 hours
+
+
+def standby():
+    semi = TEST_B[0] / (TEST_B[1] / 3600)
+    v1 = [V1B_WIFI_OFF[0] / (V1B_WIFI_OFF[1] / 3600), V1D_WIFI_ON[0] / (V1D_WIFI_ON[1] / 3600)]
+    assert all(abs(r - 2.0) < 0.05 for r in v1), v1
+    assert abs(semi - 7.0) < 0.05, semi
+    rows = [
+        ("Semi-stock standby", "software standby, screen off", round(semi), CONTEXT),
+        ("slot.advance 1.0.0", "hardware sleep (suspend-to-RAM)", round(sum(v1) / 2), ACCENT),
+    ]
+    x0, x1, top = 32, 600, 8
+    scale = (x1 - x0) / top
+    body = [header("Battery used per hour, lid closed",
+                   "As shown by the battery gauge, in whole percent")]
+    for v in (0, 2, 4, 6, 8):
+        gx = x0 + v * scale
+        body.append(f'<line x1="{gx:.1f}" y1="104" x2="{gx:.1f}" y2="300" stroke="{GRID}" stroke-width="1"/>')
+        body.append(text(gx, 324, f"{v}%", 14, INK3, anchor="middle" if v else "start"))
+    y = 112
+    for name, note, v, col in rows:
+        body.append(labelled(x0, y + 20, name, note))
+        by = y + 34
+        bw = v * scale
+        body.append(f'<rect x="{x0}" y="{by}" width="{bw:.1f}" height="38" rx="4" fill="{col}"/>')
+        body.append(text(x0 + bw + 12, by + 27, f"~{v}% an hour", 22, INK, 650))
+        y += 96
+    body.append(notes(372, [
+        "1.0.0 uses the same hardware sleep as 0.5.0. Its figure comes from two",
+        "extended 8-hour sleeps measured on 0.5.0, one with Wi-Fi off, one with it on.",
+        "Semi-stock: 0.3.0 held in software standby (61% to 47% in 2 hours).",
+        "Observed gauge readings, not guaranteed battery life.",
+    ], 18, 27))
+    h = 372 + 3 * 27 + 36
+    return card(h, "\n".join(body),
+                "Battery used per hour with the lid closed: about 7% for semi-stock software standby and about 2% for slot.advance 1.0.0 hardware sleep",
+                "Two horizontal bars from battery-gauge readings. Semi-stock standby: slot.advance 0.3.0, a modified build held in software standby "
+                "with the screen off, went from 61% to 47% in 2 hours, about 7% an hour (ordinary 0.3.0 shuts down 3 minutes after the lid closes). "
+                "slot.advance 1.0.0, hardware sleep (suspend-to-RAM): about 2% an hour. 1.0.0 keeps 0.5.0's hardware sleep unchanged, and the figure "
+                "comes from two extended 8-hour sleeps on a 0.5.0 test build: 77% to 61% with Wi-Fi off and 80% to 64% with Wi-Fi on, both 2% an hour. "
+                "Observed gauge readings in whole percent, not guaranteed battery life.")
+
+
+# ---------------------------------------------------------------- hourly drain (history, website)
 # Software standby against hardware sleep, with the 0.5.0 test-build sleeps in their own rows.
+# The README's chart until 0.5.0; from 1.0.0 the README uses standby() above. Kept, and still
+# generated, as the release-by-release record (and for the website until it is updated).
 # The first suspend-to-RAM test (Test A, ~3% an hour) and Experiment 5 stay in the technical
 # page and in calculate.py.
 def hourly():
@@ -338,6 +392,57 @@ def awake():
                 "While asleep, 0.5.0 disconnects and takes Wi-Fi down before suspending.")
 
 
+# ---------------------------------------------------------------- 1.0.0, RetroAchievements (doc)
+# From documentation/battery-tests/calculate-1.0.0.py: Phase 6, matched 40-minute windows from
+# 80% to 71%, Wi-Fi On in both runs. Current and its standard error, in mA.
+RA_OFF, RA_ON = (494, 5), (503, 3)
+
+
+def awake_ra():
+    (off, off_se), (on, on_se) = RA_OFF, RA_ON
+    diff, diff_se = on - off, round((off_se ** 2 + on_se ** 2) ** 0.5)
+    rows = [
+        ("RetroAchievements Off", "Wi-Fi On", off, off_se, CONTEXT),
+        ("RetroAchievements On", "Wi-Fi On, tracking 197 achievements", on, on_se, ACCENT),
+    ]
+    x0, x1 = 32, 560
+    scale = (x1 - x0) / 600
+    body = [header("Battery while playing, RetroAchievements Off and On",
+                   "Estimated current from battery-gauge readings, Phase 6 of 1.0.0")]
+    for v in (0, 200, 400, 600):
+        gx = x0 + v * scale
+        body.append(f'<line x1="{gx:.1f}" y1="104" x2="{gx:.1f}" y2="296" stroke="{GRID}" stroke-width="1"/>')
+        body.append(text(gx, 320, f"{v} mA", 14, INK3, anchor="middle" if v else "start"))
+    y = 112
+    for name, note, v, se, col in rows:
+        body.append(labelled(x0, y + 20, name, note))
+        by = y + 34
+        bw = v * scale
+        body.append(f'<rect x="{x0}" y="{by}" width="{bw:.1f}" height="30" rx="4" fill="{col}"/>')
+        lx, hx, cy = x0 + (v - se) * scale, x0 + (v + se) * scale, by + 15
+        body.append(f'<path d="M{lx:.1f} {cy}H{hx:.1f}M{lx:.1f} {cy-7}V{cy+7}M{hx:.1f} {cy-7}V{cy+7}" '
+                    f'stroke="{INK}" stroke-width="1.5" fill="none" opacity="0.85"/>')
+        body.append(text(hx + 12, by + 21, f"~{v} mA", 18, INK, 650))
+        body.append(text(688, by + 21, f"SE {se}", 15, INK2, anchor="end"))
+        y += 92
+    body.append(notes(360, [
+        f"Difference +{diff} mA (+{100 * diff / off:.1f}%), standard error {diff_se}: within measurement noise.",
+        "RetroAchievements uses a little more CPU, so a small real cost is plausible.",
+        "Pokemon Emerald's intro loop on mGBA, lid open, same settings, Wi-Fi On in",
+        "both runs, 80% to 71%, one run each. Whiskers: one standard error. Not",
+        "comparable with the 0.5.0 figures, measured over a different stretch of battery.",
+    ]))
+    return card(360 + 4 * 24 + 32, "\n".join(body),
+                f"Estimated current while playing: about {off} mA with RetroAchievements Off and {on} mA with it On, "
+                f"a difference of {diff} mA ({100 * diff / off:.1f}%), within measurement noise",
+                f"Two horizontal bars from the 1.0.0 Phase 6 battery runs, estimated from battery-gauge readings: RetroAchievements Off, about {off} mA "
+                f"(standard error {off_se}); RetroAchievements On, tracking Pokemon Emerald's 197 achievements, about {on} mA (standard error {on_se}). "
+                f"Difference +{diff} mA, +{100 * diff / off:.1f}%, standard error {diff_se}: within measurement noise. "
+                "RetroAchievements' per-frame evaluation used a little more CPU, so a small real cost is plausible. "
+                "Pokemon Emerald's intro loop on mGBA with the lid open and the same settings, Wi-Fi On in both runs, matched 40-minute windows from 80% to 71%, one run each. "
+                "Not electrical measurements, and not comparable with the 0.5.0 figures, which were measured over a different stretch of battery.")
+
+
 WAKE_OUT = OUT.parent / "wake"
 WAKE_OUT.mkdir(parents=True, exist_ok=True)
 (WAKE_OUT / "wake-first-frame.svg").write_text(wake())
@@ -345,4 +450,6 @@ WAKE_OUT.mkdir(parents=True, exist_ok=True)
 (OUT / "battery-current-draw.svg").write_text(current())
 (OUT / "battery-rate-comparison.svg").write_text(rates())
 (OUT / "battery-awake-0.5.0.svg").write_text(awake())
+(OUT / "battery-standby-1.0.0.svg").write_text(standby())
+(OUT / "battery-awake-ra-1.0.0.svg").write_text(awake_ra())
 print("wrote", OUT)

@@ -1,10 +1,10 @@
 # Technical reference
 
-This page describes how the current release, **slot.advance 0.5.0**, puts the RG SP (2026) to sleep, wakes it, shuts it down on a timer, manages hardware it doesn't use, runs Wi-Fi and Syncthing, and shows the in-game menu. It is written for technically curious players and anyone who wants to work on the code, and it names the source files involved.
+This page describes how the current release, **slot.advance 1.0.0**, puts the RG SP (2026) to sleep, wakes it, shuts it down on a timer, manages hardware it doesn't use, runs Wi-Fi and Syncthing, shows the in-game menu and tracks RetroAchievements. It is written for technically curious players and anyone who wants to work on the code, and it names the source files involved.
 
-It describes **0.5.0**. With Wi-Fi off (the default), sleep, wake, the lid, the RTC timer, USB and power management work as in 0.4.1 and 0.4.2; 0.5.0 adds [Wi-Fi On](#wi-fi-on), [Syncthing](#syncthing), [the in-game menu](#the-in-game-menu), a bounded [Wi-Fi driver unload before Restart and Power off](#restart-and-power-off) and four [save safety](#save-safety) fixes. How sleep evolved through 0.3.0 and 0.4.0, the configurations that were tested, the battery and wake-up measurements, and how far they can be trusted are in **[Sleep and battery: how it evolved and how it was measured](sleep-and-battery.md)**. What the features do and how to use them is in the **[README](../README.md)** and the **[User guide](user-guide.md)**.
+It describes **1.0.0**, which is 0.5.0 plus [RetroAchievements](#retroachievements): 1.0.0 changes nothing in sleep, wake, the lid, the RTC timer, USB, Wi-Fi, Syncthing or power management, apart from a bounded wait for achievement writes on a manual Power Off or Restart. With Wi-Fi off (the default), sleep, wake, the lid, the RTC timer, USB and power management work as in 0.4.1 and 0.4.2; 0.5.0 added [Wi-Fi On](#wi-fi-on), [Syncthing](#syncthing), [the in-game menu](#the-in-game-menu), a bounded [Wi-Fi driver unload before Restart and Power off](#restart-and-power-off) and four [save safety](#save-safety) fixes. How sleep evolved through 0.3.0 and 0.4.0, the configurations that were tested, the battery and wake-up measurements, and how far they can be trusted are in **[Sleep and battery: how it evolved and how it was measured](sleep-and-battery.md)**. What the features do and how to use them is in the **[README](../README.md)** and the **[User guide](user-guide.md)**.
 
-Everything here applies to the **Anbernic RG SP (2026)** (720 x 480 screen) running BaseOS 1.3.0 (Linux 4.9), the release slot.advance 0.5.0 was tested on. It does not apply to the RG35XX SP.
+Everything here applies to the **Anbernic RG SP (2026)** (720 x 480 screen) running BaseOS 1.3.0 (Linux 4.9), the release slot.advance 0.5.0 and 1.0.0 were tested on. It does not apply to the RG35XX SP.
 
 ## Contents
 
@@ -26,6 +26,7 @@ Everything here applies to the **Anbernic RG SP (2026)** (720 x 480 screen) runn
 - [The in-game menu](#the-in-game-menu)
 - [Per-game settings](#per-game-settings)
 - [Save safety](#save-safety)
+- [RetroAchievements](#retroachievements)
 - [Performance and battery](#performance-and-battery)
 - [Logging](#logging)
 - [Files copied from a computer: time stamps](#files-copied-from-a-computer-time-stamps)
@@ -46,6 +47,7 @@ The carousel, cartridges, save states, link play and nearly everything else are 
 - **`crates/slot/src/device_app.rs`** is the device's main loop. It arms sleep at start-up and calls into the app when a suspend is due.
 - **`crates/slot-net`** (new in 0.5.0) runs Wi-Fi on a background thread (`jobs.rs`, `wifi.rs`), keeps SSH stopped (`ssh.rs`), reads network time (`clock.rs`), stores networks (`psk.rs`, `saved.rs`) and supervises Syncthing (`sync/`). With Wi-Fi off, none of it runs: the app's network handle (`crates/slot/src/net.rs`) is a stand-in that does nothing.
 - **`crates/slot/src/app/in_game.rs`** (new in 0.5.0) is the in-game menu, drawn over the paused game.
+- **`crates/slot-achievements`** (new in 1.0.0) is RetroAchievements: rcheevos (vendored), the evaluator, the store and the network worker. The app's side is `crates/slot/src/ra.rs`, `ra_menu.rs`, `achievements.rs` and `app/achievements.rs`. With RetroAchievements Off, none of it runs. See [RetroAchievements](#retroachievements).
 
 slot.advance does not modify BaseOS. Its power settings are made at run time through standard kernel interfaces (sysfs and `/sys/power/state`), and none of them outlives the session: BaseOS restores the lid setting, the USB controllers and Wi-Fi at every boot. (The one thing slot.advance writes to the system card is its boot logo; see the [User guide](user-guide.md#files-on-the-games-card).)
 
@@ -68,7 +70,7 @@ slot.advance does not modify BaseOS. Its power settings are made at run time thr
 Closing the lid, or tapping `POWER` with the lid open, starts a **doze** (`App::doze`):
 
 1. **End anything in progress.** A link session is ended, and any open carousel menu is closed. The [in-game menu](#the-in-game-menu) is kept, so the game wakes still paused on it.
-2. **Save the game.** Queued settings are written, then the running game's suspend slot (`resume.state`) and battery save are written and flushed to the card (`flush_resume`). If that fails, it is tried once more. The five save states are never touched. Only after this does anything to do with the network happen.
+2. **Save the game.** Queued settings are written, then the running game's suspend slot (`resume.state`) and battery save are written and flushed to the card (`flush_resume`). If that fails, it is tried once more. The five save states are never touched. Only after this does anything to do with the network happen. With RetroAchievements tracking, achievement progress is captured with the resume bytes and handed to its store, which writes it later on its own thread; the doze never waits for it.
 3. **Decide whether the game is safe.** A written game is saved. A core that is still loading or failed to start has no progress to lose and counts as saved. A running game whose core gave no state counts as **unsaved**; its battery save is still written if the core offers one.
 4. **Go dark.** The backlight goes off, and the main loop draws two black frames (one per swap-chain buffer) and then stops drawing and stops ticking the emulator. It rests 50 ms between passes, reading input and polling the lid every 150 ms (`slot/src/standby.rs`).
 5. **With Wi-Fi On, ask the network to go quiet.** See [Wi-Fi and sleep](#wi-fi-and-sleep). With Wi-Fi off this step does nothing.
@@ -338,7 +340,9 @@ Every path ends in `DevicePlatform::restart` or `poweroff` (`crates/slot-power/s
 3. writes the outcome to `slot.log` and the shutdown trace: `8821cs not loaded, nothing to do`, `8821cs unloaded in X ms`, or a line starting `FAILED` that says it is continuing anyway;
 4. syncs again, then calls `reboot` or `poweroff` as before.
 
-With Wi-Fi off the driver is already gone, so nothing changes. Sleep and resume don't use this path. Test build 2 checked it with 16 of 16 restarts with the driver loaded (against 3 of 7 before the change), Wi-Fi Off restarts, power offs and a timed shutdown.
+With Wi-Fi off the driver is already gone, so nothing changes. Sleep and resume don't use this path.
+
+From 1.0.0, a **manual** Power Off or Restart (from the power menu or the Network screen) also waits at most 250 ms for RetroAchievements writes still pending, after the game is saved; with nothing pending there is no wait. The timed shutdown, the doze time-out and the low-battery shutdown never wait. See [RetroAchievements](#retroachievements). Test build 2 checked it with 16 of 16 restarts with the driver loaded (against 3 of 7 before the change), Wi-Fi Off restarts, power offs and a timed shutdown.
 
 ---
 
@@ -352,6 +356,7 @@ With Wi-Fi off the driver is already gone, so nothing changes. Sleep and resume 
 | Syncthing web interface | HTTPS with Syncthing's self-signed certificate, user and random five-word password, enforced at every start and health check. It listens on all addresses, so anyone on the same network can reach the login page, and only while the handheld is awake and on that network |
 | Syncthing exposure | Global discovery, relays and NAT traversal off; usage and crash reporting off |
 | Clock | Changed only with no game seated; RTC written only after a successful step |
+| RetroAchievements (1.0.0) | Off by default. Connects only to `retroachievements.org`, over HTTPS with host-name verification against public roots, and only while Wi-Fi is already connected. The password is sent once and never stored; the login token is kept in `Config/retroachievements/account.txt`, not encrypted, never logged and outside the synced folders |
 
 ---
 
@@ -418,7 +423,7 @@ On mGBA the joining device restores the host's state, save RAM included, and run
 - nothing is written for that game: autosave, lid close, eject, power off and the timed shutdown all skip it, including play after the link has ended;
 - manual save states and a new link session are refused.
 
-The host is unaffected. A player-facing warning is planned for 0.5.1; the [User guide](user-guide.md#if-you-join-a-session) documents the restrictions. A real two-handheld link session on 0.5.0 has not been run; M4 is covered by upstream's host-test assertions.
+The host is unaffected. A player-facing warning is planned for a later release; the [User guide](user-guide.md#if-you-join-a-session) documents the restrictions. A real two-handheld link session on 0.5.0 has not been run; M4 is covered by upstream's host-test assertions.
 
 ### Verification
 
@@ -428,21 +433,137 @@ Each fix has a test that fails on the old code and passes on the new, including 
 
 ---
 
+## RetroAchievements
+
+*New in 1.0.0 (developed as 0.6.0). Design: `design/v6-ra-assessment.md`, `design/v6-ra-architecture.md` and `design/v6-ra-phases.md`; build reports and checkpoints `design/v6-phase2-report.md` to `design/v6-checkpoint-d.md`; handheld results `design/v6-phase6-results.md` (project files). rcheevos v12.5.0 is vendored unmodified in `crates/slot-achievements/vendor/` (MIT). The design builds on @pvaibhav's [slot fork](https://github.com/pvaibhav/slot) (GPL-3.0): its frame decorator, its `SET_MEMORY_MAPS` handling and its offline concepts (a per-ROM definition cache, a durable ledger written before the notice, "User already has" treated as success), rewritten for slot.advance's threads, storage and networking.*
+
+The rule for the whole feature: **0.5.0's sleep, save and networking behaviour is the baseline, and RetroAchievements adapts to it.** It is Softcore only, Off by default, and runs only with mGBA (GBA, GB and GBC).
+
+### Components
+
+| Part | Runs on | Does | Never does |
+|---|---|---|---|
+| Evaluator (`crates/slot-achievements/src/lib.rs`, used from `crates/slot/src/emu.rs`) | The emulator thread | rcheevos' runtime: evaluates every emulated frame after `run_frame`, fast-forward steps included, reading emulator memory in place through `rc_libretro`; captures and restores progress | File or network work; blocking. Its type is not `Send`, so it can't be used from another thread |
+| RA store (`store/`, thread `slot-ra-store`) | Its own thread, blocking on a channel | The ledger, account, definition cache, progress files and clock records; the unlock notices | Network; anything in the sleep path |
+| Network worker (`net.rs`, thread `slot-ra-net`) | Its own thread, blocking on a channel (a timed wait only while a retry is due) | Log In, token renewal, definitions, session start, unlock submission | Turning Wi-Fi on; anything while Wi-Fi isn't connected |
+| Preparation (`session.rs`, thread `slot-ra-prepare`) | A short-lived thread per game start | Hashes the ROM (first time only), loads cached definitions and checks saved progress | Holding up the game start |
+| App (`crates/slot/src/ra.rs`, `ra_menu.rs`, `app/achievements.rs`) | The game thread | Settings screens, status line, notices, passing messages | Waiting on any of the above |
+
+With RetroAchievements Off, none of these threads is started, the evaluator isn't created, no frame does any RetroAchievements work and no RetroAchievements file is touched; the game start path is exactly 0.5.0's.
+
+### Emulator memory
+
+mGBA publishes its memory map late (on the first frame or state operation) and again on every reset, and a Game Boy reset frees and reallocates work RAM. So `slot-retro` only copies the map out of the core's callback, the evaluator applies it after the core call returns, every map after the first resets the runtime, achievement addresses are validated against each new map, and a frame in which any read falls outside the map counts for nothing and resets the runtime. Memory is read only on the emulator thread, between core calls. The console comes from the server's game data, not the file extension. Linked and cable sessions are never evaluated.
+
+| Event | Effect on tracking |
+|---|---|
+| Every frame, at any speed | Evaluated |
+| Manual state load (and Undo Load) | Runtime reset: every achievement back to waiting |
+| Rewind | Not evaluated while rewinding; one reset when it ends |
+| Paused (menus, sleep) | No frames, nothing evaluated |
+| Unlock | The achievement is deactivated at once (it can't fire twice) and a message goes to the store |
+
+In rcheevos' **waiting** state, an achievement whose conditions are already true must first become false before it can trigger, so a loaded state can't unlock anything by itself. Only published (core set) achievements are activated, and never the server's warning achievement for unrecognised clients (ID 101000001 and up). Achievements already unlocked by the logged-in account (in the server's list or the ledger) are not activated.
+
+### When a game is tracked
+
+A game is tracked from its start (insert, or the cold-boot resume) when RetroAchievements is On and an account is logged in. The preparation runs alongside the ROM load:
+
+- **Definitions cached** (`games/<rom-hash>.json`): tracking starts from the cache at once. Online, the set and the account's unlock list are fetched again in the background and written to the cache only if they changed; **a changed set is applied at the next game start, never mid-game.**
+- **Nothing cached**: the game starts untracked and the worker fetches the set when Wi-Fi is connected. If the answer arrives for the same seating, tracking starts from then. A game started with Wi-Fi Off and never fetched is not tracked in that session.
+- **Switching On, or logging in, during a game** never tracks it: every game start, game end, Log In, Log Out and Off starts a new generation, and an answer from an earlier generation is dropped, including one for the same ROM ejected and inserted again.
+- **gpSP, link and cable sessions** are not tracked.
+
+### Unlocks and the ledger
+
+1. The evaluator collects triggered IDs during `rc_runtime_do_frame` (rcheevos' callback can't change the runtime mid-loop), deactivates them after it returns and sends each to the store with the wall clock, the boot ID and the boot-time clock. Microseconds; never blocks the frame. If the store's queue (64 messages) is full, unlocks are kept and offered again on the next frame, never dropped.
+2. The store writes `unlocks.txt` atomically (temporary file, `fsync`, rename, directory `fsync`), then shows the notice, then wakes the worker. A notice therefore never appears for an unlock that wasn't kept. If the write fails, the entry is kept in memory, retried, and the card alarm shows.
+3. Ledger lines are keyed by account and achievement ID, each with its own checksum: `pending`, `synced`, `held` or `rejected`. Settled lines are kept 90 days; `pending` and `held` lines never expire.
+
+| Server answer | Result |
+|---|---|
+| Success, or "User already has" | `synced` (the server keeps its earlier date) |
+| Deleted (`404`) or unpublished (`409`) | `rejected`, not retried |
+| Malformed request (`422`), or three puzzling answers in a row | `held`: kept, counted in the status line, not retried automatically |
+| `403` with a reason (such as an unverified email), or "unsupported client" | Sending paused, the reason shown; checked again at the next connection; nothing dropped |
+| Login invalid or expired | Sending paused, "Log in again"; nothing dropped |
+| Network error, timeout, `5xx` | Kept `pending`; retried after 30 s, doubling to 15 minutes, only while connected; reset at each new connection |
+
+A ledger that can't be read whole is kept as `unlocks.damaged-<stamp>.txt`, every line with a valid checksum is recovered into a new file, RetroAchievements keeps running, and the status line says so until seen.
+
+### Unlock times
+
+The award request can carry the seconds since the unlock, which RetroAchievements accepts up to 1,209,600 (14 days); a larger signed value would fail its check and flag the account, so slot.advance never sends more. The offset is worked out when sending (`store/clock.rs`):
+
+- **Same boot:** boot-time clock now minus then (`CLOCK_BOOTTIME`, which counts through suspend). Exact, however the wall clock moved.
+- **Earlier boot:** `clock.txt` keeps, for the last 30 boots, segments of continuous wall clock split by manual Date & Time changes and network steps, with each network-time measurement (slot-net's offer, read without waiting for the clock to be stepped, which happens only with no game seated). A measurement corrects an unlock only within the same segment, never across a manual change, step or reboot. Or an anchor, set when the RTC was last brought into line with network time and cleared by any manual change, vouches for the wall clock.
+- **Otherwise** no offset is sent and the server dates it on arrival (`unlock time unknown … sent as now` in the log). Negative results become 0; anything over 14 days is sent as 14 days.
+
+### Partial progress
+
+On every resume write (the minute autosave, lid close, Power Off, low battery, eject) the evaluator serialises rcheevos' progress (hit counts, measured values and memory deltas, each achievement with an MD5 of its definition) with the state bytes, and the store writes `accounts/<account>/progress/<platform>/<core>/<stem>.rap` with the ROM hash, the account and a fingerprint (MD5 and length) of the exact `resume.state` it belongs with. At a cold-boot resume it is restored before the first frame **only** if the preparation is ready by then and everything matches; otherwise tracking starts fresh. Changed definitions reset only the achievements that changed. Manual state loads and rewind reset progress. A mismatch (another account, a resume from another device, power lost between the two writes) only means a fresh start: nothing can be awarded that wasn't earned, and unlocks are untouched. Progress written by a newer capture replaces an older one still queued; a skipped capture means at most a reset at the next cold boot.
+
+### Network
+
+RetroAchievements sends requests only while slot-net reports Wi-Fi On and connected, learns of connections from slot-net's connected event, and never starts, keeps up or delays a connection. There are no pings, timers, badge downloads or library scans.
+
+| Trigger | Requests |
+|---|---|
+| Log In in Settings | Login with the password, sent once |
+| First connection each boot, logged in | Login with the token (renewing it), then waiting unlocks, oldest first, one at a time |
+| A game starts, or connects with a game waiting for its set | Achievement set and session start (the account's unlock list) |
+| An unlock is written while connected, or a retry is due | Submission |
+
+The HTTPS endpoint (`crates/slot-net/src/web.rs`) is separate from Syncthing's pinned one: host-name verification and SNI for `retroachievements.org` against Mozilla's public roots (`webpki-roots`), a DNS lookup on the worker thread, a **20 s** limit on each whole request and a **2 MB** response cap. Certificates are checked against network time, not the possibly uncorrected system clock; with no measurement and a clock earlier than the anchor, requests are held ("Waiting for network time"). The user agent is `slot.advance/<version> (Linux aarch64) rcheevos/12.5.0`. Requests and responses are built and parsed by rcheevos' `rapi`.
+
+### Sleep, power and saving
+
+- **Lid close and sleep:** nothing new on the doze path beyond the progress capture (microseconds, on the emulator thread) and a channel send. RetroAchievements is not part of the sleep gate. A request in flight runs into its deadline or is frozen with everything else and fails after wake, and is retried later; a ledger write queued at lid close usually lands within the existing 400 ms settle, and otherwise finishes after wake (memory is kept through suspend).
+- **Manual Power Off and Restart** wait **at most 250 ms** for anything still queued or being written by the store, ledger first (`POWEROFF_WAIT`). Nothing pending, no wait. The timed shutdown, the doze time-out and the low-battery shutdown never wait.
+- **Saving the game comes first, unchanged.** RetroAchievements writes happen afterwards, on its own thread.
+- **Off** hands any unlock the emulator still holds to the store, then stops the store and worker on a thread of their own (`slot-ra-stop`); the game thread never waits.
+
+### Storage and accounts
+
+Everything is under `Config/retroachievements/`, outside the Syncthing folders `Saves/` and `States/`:
+
+| Path | Contents |
+|---|---|
+| `account.txt` | User name and login token. No password |
+| `unlocks.txt` | The ledger |
+| `clock.txt` | Clock segments and the anchor |
+| `games/index.txt` | ROM path, size and modification time to ROM hash (each ROM hashed once) |
+| `games/<rom-hash>.json` | The server's achievement set, as received (shared by every account) |
+| `accounts/<account>/unlocked/<rom-hash>.json` | That account's unlock list for the game |
+| `accounts/<account>/progress/…/<stem>.rap` | That account's partial progress |
+| `*.damaged-<stamp>` | Damaged files, kept for diagnosis (one per name per day) |
+
+Every file is written atomically and only when it changed. **Accounts are isolated:** activation, deduplication and progress use only the logged-in account's records, and one account's unlocks are never sent with another's token. **Log Out** deletes `account.txt` and stops tracking at once; that account's ledger lines, unlock lists and progress stay for when it logs in again.
+
+**The password** goes from the keyboard to the worker by moves only, in a type that wipes itself however it is dropped, is sent once over TLS and is never written, logged or shown after entry. **The token** is never logged and is sent only to `retroachievements.org`. exFAT has no permissions, so anyone with the card can read it. Log Out removes it from the card, but the server keeps it valid until it expires, one year after its last use; whether a password change revokes it was not verified.
+
+### Verification
+
+Host tests for every part, run on each build: the evaluator against real achievement logic and the pinned mGBA, storage and damage recovery, every clock ordering, every server answer through a fake server, power and sleep interaction, the real session with a fake core, every Settings screen and status text rendered, and planted bugs for each guarantee; each phase had an independent review. On the handheld (Phase 6, 8 November 2026, test build of `08261fd`): a legitimate online unlock confirmed on the website, an offline unlock kept through lid sleep and Power Off and sent after reconnecting with its original time, four delayed submissions accepted, state load and rewind with no duplicate notice, fast-forward, and clean logs. **Not shown on the handheld:** partial progress across a cold-boot resume (host-tested only). See [Sleep and battery](sleep-and-battery.md#100-retroachievements).
+
+---
+
 ## Performance and battery
 
-The measurements are in **[Sleep and battery](sleep-and-battery.md#050-wi-fi-and-syncthing)**, with how they were made. In short:
+The measurements are in **[Sleep and battery](sleep-and-battery.md#050-wi-fi-and-syncthing)**, with how they were made. 1.0.0 changes nothing in sleep, so its sleep figures are 0.5.0's; no sleep was measured on a 1.0.0 build. In short:
 
 - **Asleep, Wi-Fi Off:** unchanged from 0.4.x, about 2 to 3.2% an hour on the battery gauge in three extended sleeps, and 2% an hour in an 8-hour sleep on a 0.5.0 test build.
 - **Asleep, Wi-Fi On:** with `wlan0` down before sleep, two development sleeps were estimated at about 66 and 74 mA, and an 8-hour sleep on a 0.5.0 test build read 2% an hour. Close to Wi-Fi Off, but not shown to be identical.
 - **Awake:** Wi-Fi On added about 29 mA and Syncthing a further 27 mA in one workload (445, 474 and 501 mA), about 13% together.
 - **Wake:** in R3 (on 0.4.2, modelling the 0.5.0 design), resume start to first frame was a median of 819 ms with the driver unloaded and 834 ms with it loaded, connected and taken down before each sleep.
 - **Syncing States** uploads about 25 MB an hour of play, mostly the suspend slot saved every minute.
+- **RetroAchievements (1.0.0), awake:** 494 mA Off and 503 mA On in one matched pair of runs with Wi-Fi On, +9 mA (+1.8%) with a standard error of 6, within measurement noise. The game thread's CPU time rose about 22%, so a small real cost is plausible. See [1.0.0: RetroAchievements](sleep-and-battery.md#100-retroachievements).
 
 ---
 
 ## Logging
 
-slot.advance writes what it does to `slot.log` on the games card. Its first line names the build, for example `slot advance 0.5.0 (` followed by the commit and build date. Each start renames the previous log to `slot.log.1`, so only the current and previous sessions are kept.
+slot.advance writes what it does to `slot.log` on the games card. Its first line names the build, for example `slot advance 1.0.0 (` followed by the commit and build date. Each start renames the previous log to `slot.log.1`, so only the current and previous sessions are kept.
 
 Sleep and power lines include:
 
@@ -462,7 +583,16 @@ From 0.5.0, with Wi-Fi On, network lines include:
 - `slot: wifi: connected to <network name> in … s` and `slot: wifi: joined and saved <network name>`
 - before Restart and Power off: `… wifi driver: 8821cs unloaded in … ms`, or a line starting `FAILED`
 
-Passwords and network keys are never written to `slot.log`, but the names of networks joined are. Syncthing keeps its own log in `Config/syncthing/syncthing.log`.
+From 1.0.0, with RetroAchievements On, lines include:
+
+- `slot: achievements: started with the boot`, `set on` or `set off`, `stopped`, `logged in`, `login failed: …`
+- `slot: achievements: tracking <count> (… unpublished, … already unlocked, … unparsed, … unmapped)`, or `not logged in; not tracked`, `no achievements for game …`, `not tracked in this session (linked)`
+- `slot: achievements: progress restored`, `no saved progress; starting fresh`, `progress arrived after the game started; tracking starts fresh`
+- `slot: achievements: <id> unlocked`, `<id> kept for <account>`, `<id> accepted (sent … s after it was earned)`, `unlock time unknown for <id> (…); sent as now`
+- `slot: achievements: retrying in … s (…)`, `sending paused: …`, `waiting for network time before sending`, `<id> held for investigation (…)`, `<id> rejected (…); not retried`
+- `slot: achievements: … could not be read whole; kept as …, … records recovered, … lost`
+
+Passwords, network keys and the RetroAchievements token are never written to `slot.log`, but the names of networks joined are, and so is the RetroAchievements user name in `kept for <account>`. Syncthing keeps its own log in `Config/syncthing/syncthing.log`.
 
 From 0.4.2, each game launch is logged step by step, in milliseconds since slot started: `slot: launch: insert …`, `opening … on mgba`, `resume state read`, `core opened`, `save read`, `slot: emu: loading …, N bytes`, `save ram`, `resume state`, `slot: emu: ready`, and `slot: launch: first frame shown`. Ejecting logs `slot: emu: stopping` and `stopped`, and the speaker coming back after a silence logs `slot: audio reopened`.
 
@@ -531,6 +661,7 @@ Conflict copies are subject to Syncthing's `maxConflicts` setting; set to 0, Syn
 - **Syncthing syncs only while awake** and on the local network (global discovery and relays off). It is synchronisation, not a backup, and slot.advance doesn't detect or resolve conflicting changes.
 - **No same-night comparison of Wi-Fi On and Off standby** has been made; see [Performance and battery](#performance-and-battery).
 - **Refused saves are not written at all.** After a failed card read, or after joining a link session, a game is not saved until its cart is inserted again; the timed shutdown can end such a session without saving it. See [Save safety](#save-safety).
+- **RetroAchievements (1.0.0)** is Softcore only, on mGBA only, with no Hardcore, leaderboards, Rich Presence, badges or achievement list. A game's set must be fetched online once before it can be tracked offline; switching On or logging in during a game tracks from the next game started; a changed set applies at the next start. Unlock dates more than 14 days old are sent as 14 days (server limit), and untraceable ones as the time of sending. The login token is not encrypted on the card and stays valid on the server after Log Out until it expires. Partial progress across a cold-boot resume was verified by host tests, not on the handheld.
 - **File times from a computer** (0.5.0, with Syncthing): files copied onto the card from a Mac through an SD card reader read with a shifted modified time, probably because of the BaseOS exFAT driver. See [above](#files-copied-from-a-computer-time-stamps).
 
 ---
@@ -555,6 +686,12 @@ Conflict copies are subject to Syncthing's `maxConflicts` setting; set to 0, Syn
 | `crates/slot/src/net.rs`, `net_menu.rs`, `link_radio.rs` | The app's network handle and sleep gate, the Network screens' behaviour, SlotLink's use of the radio |
 | `crates/slot-ui/src/network.rs`, `keyboard.rs` | Drawing the Network screens and the on-screen keyboard |
 | `crates/slot/src/app/in_game.rs` | The in-game menu overlay |
+| `crates/slot-achievements/src/lib.rs`, `session.rs` | The rcheevos evaluator (frames, memory maps, unlocks, progress) and a game's preparation |
+| `crates/slot-achievements/src/store/` | The RA store: ledger, account, definition cache, progress, clock records, damage recovery |
+| `crates/slot-achievements/src/net.rs`, `api.rs` | The network worker and the requests and answers (through rcheevos' `rapi`) |
+| `crates/slot-net/src/web.rs` | The public-roots HTTPS client for `retroachievements.org` |
+| `crates/slot/src/ra.rs`, `achievements.rs`, `ra_menu.rs`, `app/achievements.rs` | RetroAchievements in the app: threads, the evaluator's emulator hooks, the Settings screens, status and notices |
+| `crates/slot-achievements/vendor/` | rcheevos v12.5.0 and `libretro.h`, unmodified |
 | `crates/slot/src/persist.rs`, `session.rs` | Reading saves and resumes (a failed read is an error), and refusing both writes after one |
 | `cores/mgba/*.patch` | Patches to the pinned mGBA, each copied into `System/licenses/` |
 | `card/System/launch_frontend.sh` | Starts slot and keeps the previous `slot.log` as `slot.log.1` |

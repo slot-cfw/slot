@@ -13,6 +13,7 @@ From 0.4.0, slot.advance uses [semantic versioning](https://semver.org): `MAJOR.
 - A **test build** has a pre-release suffix, such as `0.4.0-beta.1`. If a beta needs fixing, the next one is `0.4.0-beta.2`.
 - Once a build is approved on the RG SP (2026), it is released without the suffix, such as `0.4.0`.
 - A **fix** to a release raises the last number (`0.4.1`); **new features** raise the middle one (`0.5.0`).
+- **1.0.0** marks the point where slot.advance does what it set out to do: real sleep, optional Wi-Fi and Syncthing, the in-game menu and RetroAchievements. It was developed as 0.6.0 and named 1.0.0 once it passed validation. The number adds nothing to its scope or testing, and the same rules apply from here (`1.0.1` for fixes, `1.1.0` for new features).
 - Releases on GitHub are tagged with an `advance-` prefix, such as `advance-0.4.0`, to keep them apart from upstream slot's tags in this repository. 0.3.0 keeps its original tag, `advance-v3`.
 - From the stable 0.4.0 release, downloads are named `slot.advance-<version>-rg-sp.zip`, such as `slot.advance-0.4.0-rg-sp.zip`. Earlier downloads, including the 0.4.0 betas, keep their original `slot-advance-…` names.
 
@@ -20,7 +21,43 @@ The version and Git commit a build came from are written as the first line of `s
 
 ---
 
-## 0.5.0 (current release)
+## 1.0.0 (current release)
+
+Tag `advance-1.0.0`. Download: `slot.advance-1.0.0-rg-sp.zip` from the [release page](https://github.com/slowphase/slot.advance/releases/tag/advance-1.0.0). [Report problems](https://github.com/slowphase/slot.advance/issues/new/choose), attaching `slot.log` and `slot.log.1` if you can.
+
+RetroAchievements, online and offline. Everything else, sleep, wake, Wi-Fi, Syncthing and battery use while asleep among it, works as in 0.5.0. Developed as 0.6.0.
+
+**New**
+- **RetroAchievements, off by default.** **Settings > RetroAchievements** switches it on, logs in to your [RetroAchievements](https://retroachievements.org) account (user name and password on the on-screen keyboard; the password is sent once and never stored) and shows one status line. It is also in Settings during a game. [RetroAchievements](user-guide.md#retroachievements).
+- **Softcore achievements on mGBA**, for GBA, Game Boy and Game Boy Color games. Save states, rewind and fast-forward stay available; loading a state or rewinding never unlocks anything by itself or repeats an achievement.
+- **Offline achievements.** Once a game has been started online and its achievements fetched, it earns them offline too. Each unlock is written to the card before its notice appears, kept through sleep, the timed shutdown and Power Off, and sent automatically the next time Wi-Fi connects, dated when it was earned where that can be traced (up to the 14 days RetroAchievements allows).
+- **Unlock notices:** one line in the top bar, such as "Achievement unlocked: Hall of Fame (10 points)", shown once the unlock is on the card and never over a menu.
+- **Progress toward achievements** (counters and goals met over time) is kept through sleep, and saved with the game's suspend slot for the next cold-boot resume, for the same account.
+- **Accounts kept apart.** Log Out keeps that account's unsent achievements on the card until it logs in again, and nothing from one account is ever used or sent for another.
+
+**How it treats sleep, power and the network**
+- RetroAchievements never runs during sleep, never delays sleep, the automatic save or the timed shutdown, never switches Wi-Fi on, and sends nothing unless Wi-Fi is on and connected. A manual Power Off or Restart waits at most 250 ms for an achievement still being written; the low-battery shutdown never waits.
+- With it off, nothing to do with RetroAchievements runs and no file is touched.
+- Its files, including the login token, are in `Config/retroachievements/`, outside the folders Syncthing syncs.
+
+**Battery** (see [1.0.0: RetroAchievements](sleep-and-battery.md#100-retroachievements))
+- **Asleep:** unchanged. 1.0.0 keeps 0.5.0's hardware sleep, so its figure, about 2% an hour, is from two extended 8-hour sleeps on 0.5.0; no sleep was measured on 1.0.0. The README's battery chart now compares semi-stock software standby (about 7% an hour) with 1.0.0; the release-by-release history stays in [Sleep and battery](sleep-and-battery.md).
+- **While playing:** in one matched pair of runs (Pokémon Emerald, Wi-Fi On in both), about 494 mA with RetroAchievements off and 503 mA with it on: +9 mA (+1.8%), with a standard error of 6, within measurement noise. It uses a little more CPU, so a small real cost is plausible. No battery life is guaranteed.
+
+**Credits:** RetroAchievements and rcheevos v12.5.0 (MIT, included unmodified; licence in `System/licenses/`). The design builds on @pvaibhav's slot fork.
+
+**Checked on the device:** Phase 6 (8 November 2026) on a test build of this release's code apart from the version number: installation, RetroAchievements Off with a lid sleep, logging in, a legitimate online unlock (Kirby: Nightmare in Dream Land) confirmed on the RetroAchievements website, state load and rewind with no second notice, fast-forward, a legitimate offline unlock (Sonic Advance) kept through lid sleeps and Power Off and sent after reconnecting with its original time, four delayed submissions accepted, the battery comparison above, and logs with no RetroAchievements or sleep errors. Not shown on the device: progress toward an achievement across a cold-boot resume, which is covered by host tests. Sleep and wake were checked with a few lid cycles only, as nothing in them changed. See [Validation status](sleep-and-battery.md#validation-status).
+
+**Known limitations**
+- **A game must be started online once** so its achievements can be fetched, before it can earn them offline. Switching RetroAchievements on, or logging in, during a game tracks only from the next game started. [Details](user-guide.md#when-tracking-starts).
+- Softcore and mGBA only: no Hardcore, leaderboards, Rich Presence, badges or achievement list on the handheld, and no tracking on gpSP or during link play.
+- Achievements sent more than 14 days after they were earned are dated 14 days before sending (a RetroAchievements limit); those whose time can't be traced are dated when sent.
+- The login token is not encrypted on the games card, and stays valid on RetroAchievements' side after Log Out until it expires.
+- The limitations of 0.5.0 below still apply.
+
+---
+
+## 0.5.0 (superseded by 1.0.0)
 
 Tag `advance-0.5.0`. Download: `slot.advance-0.5.0-rg-sp.zip` from the [release page](https://github.com/slowphase/slot.advance/releases/tag/advance-0.5.0). [Report problems](https://github.com/slowphase/slot.advance/issues/new/choose), attaching `slot.log` and `slot.log.1` if you can.
 

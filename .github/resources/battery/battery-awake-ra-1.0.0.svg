@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="488" viewBox="0 0 720 488" role="img" aria-labelledby="t d">
+<title id="t">Estimated current while playing: about 494 mA with RetroAchievements Off and 503 mA with it On, a difference of 9 mA (1.8%), within measurement noise</title>
+<desc id="d">Two horizontal bars from the 1.0.0 Phase 6 battery runs, estimated from battery-gauge readings: RetroAchievements Off, about 494 mA (standard error 5); RetroAchievements On, tracking Pokemon Emerald's 197 achievements, about 503 mA (standard error 3). Difference +9 mA, +1.8%, standard error 6: within measurement noise. RetroAchievements' per-frame evaluation used a little more CPU, so a small real cost is plausible. Pokemon Emerald's intro loop on mGBA with the lid open and the same settings, Wi-Fi On in both runs, matched 40-minute windows from 80% to 71%, one run each. Not electrical measurements, and not comparable with the 0.5.0 figures, which were measured over a different stretch of battery.</desc>
+<rect x="0.5" y="0.5" width="719" height="487" rx="14" fill="#17161D" stroke="#2E2C38"/>
+<g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<text x="32" y="50" font-size="24" fill="#EEECF4" font-weight="650" text-anchor="start">Battery while playing, RetroAchievements Off and On</text>
+<text x="32" y="80" font-size="16" fill="#C2BFD0" font-weight="400" text-anchor="start">Estimated current from battery-gauge readings, Phase 6 of 1.0.0</text>
+<line x1="32.0" y1="104" x2="32.0" y2="296" stroke="#2E2C38" stroke-width="1"/>
+<text x="32.0" y="320" font-size="14" fill="#A3A0B3" font-weight="400" text-anchor="start">0 mA</text>
+<line x1="208.0" y1="104" x2="208.0" y2="296" stroke="#2E2C38" stroke-width="1"/>
+<text x="208.0" y="320" font-size="14" fill="#A3A0B3" font-weight="400" text-anchor="middle">200 mA</text>
+<line x1="384.0" y1="104" x2="384.0" y2="296" stroke="#2E2C38" stroke-width="1"/>
+<text x="384.0" y="320" font-size="14" fill="#A3A0B3" font-weight="400" text-anchor="middle">400 mA</text>
+<line x1="560.0" y1="104" x2="560.0" y2="296" stroke="#2E2C38" stroke-width="1"/>
+<text x="560.0" y="320" font-size="14" fill="#A3A0B3" font-weight="400" text-anchor="middle">600 mA</text>
+<text x="32" y="132" font-size="18" fill="#EEECF4" font-weight="600">RetroAchievements Off<tspan dx="10" font-size="15" font-weight="400" fill="#A3A0B3">Wi-Fi On</tspan></text>
+<rect x="32" y="146" width="434.7" height="30" rx="4" fill="#5C596C"/>
+<path d="M462.3 161H471.1M462.3 154V168M471.1 154V168" stroke="#EEECF4" stroke-width="1.5" fill="none" opacity="0.85"/>
+<text x="483.12" y="167" font-size="18" fill="#EEECF4" font-weight="650" text-anchor="start">~494 mA</text>
+<text x="688" y="167" font-size="15" fill="#C2BFD0" font-weight="400" text-anchor="end">SE 5</text>
+<text x="32" y="224" font-size="18" fill="#EEECF4" font-weight="600">RetroAchievements On<tspan dx="10" font-size="15" font-weight="400" fill="#A3A0B3">Wi-Fi On, tracking 197 achievements</tspan></text>
+<rect x="32" y="238" width="442.6" height="30" rx="4" fill="#8B7CF6"/>
+<path d="M472.0 253H477.3M472.0 246V260M477.3 246V260" stroke="#EEECF4" stroke-width="1.5" fill="none" opacity="0.85"/>
+<text x="489.28000000000003" y="259" font-size="18" fill="#EEECF4" font-weight="650" text-anchor="start">~503 mA</text>
+<text x="688" y="259" font-size="15" fill="#C2BFD0" font-weight="400" text-anchor="end">SE 3</text>
+<text x="32" y="360" font-size="16" fill="#A3A0B3" font-weight="400" text-anchor="start">Difference +9 mA (+1.8%), standard error 6: within measurement noise.</text>
+<text x="32" y="384" font-size="16" fill="#A3A0B3" font-weight="400" text-anchor="start">RetroAchievements uses a little more CPU, so a small real cost is plausible.</text>
+<text x="32" y="408" font-size="16" fill="#A3A0B3" font-weight="400" text-anchor="start">Pokemon Emerald's intro loop on mGBA, lid open, same settings, Wi-Fi On in</text>
+<text x="32" y="432" font-size="16" fill="#A3A0B3" font-weight="400" text-anchor="start">both runs, 80% to 71%, one run each. Whiskers: one standard error. Not</text>
+<text x="32" y="456" font-size="16" fill="#A3A0B3" font-weight="400" text-anchor="start">comparable with the 0.5.0 figures, measured over a different stretch of battery.</text>
+</g>
+</svg>
