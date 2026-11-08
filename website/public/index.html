@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>slot.advance | GBA frontend for the Anbernic RG SP (2026)</title>
-<meta name="description" content="Real sleep, instant resume and efficient standby for the Anbernic RG SP (2026). A Game Boy Advance frontend with optional Wi-Fi and Syncthing.">
+<meta name="description" content="Real sleep, instant resume and efficient standby for the Anbernic RG SP (2026). A Game Boy Advance frontend with optional Wi-Fi, Syncthing and RetroAchievements.">
 <link rel="canonical" href="https://slotadvance.com/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="slot.advance">
 <meta property="og:title" content="slot.advance | GBA frontend for the Anbernic RG SP (2026)">
-<meta property="og:description" content="Real Sleep. Instant Resume. Super-Efficient Standby. A Game Boy Advance frontend for the Anbernic RG SP (2026), with optional Wi-Fi and Syncthing.">
-<meta property="og:image" content="https://slotadvance.com/og-0.5.0.jpg">
+<meta property="og:description" content="Real Sleep. Real Saves. Real Achievements. A Game Boy Advance frontend for the Anbernic RG SP (2026), with real hardware sleep, optional Wi-Fi, Syncthing and RetroAchievements.">
+<meta property="og:image" content="https://slotadvance.com/og-1.0.0.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="The striped slot.advance logo beside an open Anbernic RG SP (2026) showing the same logo, with the lines: Real Sleep. Instant Resume. Super-Efficient Standby.">
+<meta property="og:image:alt" content="The striped slot.advance logo beside an open Anbernic RG SP (2026) showing the same logo, with the lines: Real Sleep. Real Saves. Real Achievements.">
 <meta property="og:url" content="https://slotadvance.com/">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#15141b">
@@ -147,35 +147,10 @@ section > p { margin: 0 auto; color: var(--muted); max-width: 36rem; }
 .grid section { min-width: 0; align-content: start; }
 .grid h2 { font-size: 1.15rem; }
 
-/* Battery chart */
+/* Battery chart: the repository's SVG, kept modest so it doesn't outweigh the other features. */
 .battery { gap: 1.25rem; }
-.headline { margin: 0; color: var(--muted); }
-.headline strong { color: var(--fg); font-weight: 500; }
-.chart {
-  display: grid; gap: 1.4rem;
-  padding: clamp(1.1rem, 4vw, 1.75rem);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-}
-.row { display: grid; gap: 0.55rem; min-width: 0; justify-items: center; text-align: center; }
-.row-top { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 0.15rem 1rem; }
-.row-name { font-weight: 500; }
-.row-name small { color: var(--muted); font-weight: 400; font-size: 0.85rem; margin-left: 0.4rem; }
-.row-obs { font-family: var(--mono); font-size: 0.95rem; color: var(--muted); font-variant-numeric: tabular-nums; text-wrap: balance; }
-.row-obs span { white-space: nowrap; }
-/* Comparison rows: a little more air between them than between a row's parts. */
-.chart-pair { gap: 1.9rem; }
-.row-bar { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 0.75rem; }
-.blocks { display: flex; gap: 0.25rem; }
-.blocks i {
-  display: block; width: clamp(1.5rem, 5.5vw, 2.25rem); height: 1.6rem;
-  clip-path: polygon(30% 0, 100% 0, 70% 100%, 0 100%);
-  background: var(--c);
-}
-.blocks i.range { background: color-mix(in srgb, var(--c) 45%, transparent); }
-.blocks i.part { background: linear-gradient(90deg, color-mix(in srgb, var(--c) 45%, transparent) var(--p), color-mix(in srgb, var(--c) 15%, transparent) var(--p)); }
-.rate { font-weight: 700; font-size: 1.1rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.battery strong { color: var(--fg); font-weight: 500; }
+.battery-chart { display: block; width: 100%; max-width: 34rem; height: auto; margin: 0 auto; border-radius: 14px; }
 .note { margin: 0; color: var(--muted); font-size: 0.85rem; line-height: 1.5; text-align: center; }
 .note a { text-decoration-color: var(--dim); text-underline-offset: 3px; }
 .note a:hover { color: var(--fg); text-decoration-color: var(--fg); }
@@ -212,14 +187,14 @@ section > p { margin: 0 auto; color: var(--muted); max-width: 36rem; }
 <main class="wrap">
   <header class="hero">
     <h1><img src="logo.png" width="1001" height="420" alt="slot.advance"></h1>
-    <p class="tagline">Real Sleep. Instant Resume.<br>Super-Efficient Standby.</p>
+    <p class="tagline">Real Sleep. Real Saves.<br>Real Achievements.</p>
     <p class="device">A Game Boy Advance frontend for the Anbernic RG&nbsp;SP&nbsp;(2026).</p>
   </header>
 
   <div class="video" id="video">
-    <video controls playsinline preload="metadata" poster="video-poster-0.5.0-r3.jpg" width="1920" height="1080" aria-label="slot.advance 0.5.0: real sleep, now connected">
-      <source src="slot-advance-0.5.0-r3.mp4" type="video/mp4">
-      <a href="slot-advance-0.5.0-r3.mp4">Download the slot.advance 0.5.0 video</a>
+    <video controls playsinline preload="metadata" poster="video-poster-1.0.0.jpg" width="1920" height="1080" aria-label="slot.advance: real sleep, real saves, real achievements">
+      <source src="slot-advance-1.0.0.mp4" type="video/mp4">
+      <a href="slot-advance-1.0.0.mp4">Download the slot.advance video</a>
     </video>
   </div>
 
@@ -233,57 +208,9 @@ section > p { margin: 0 auto; color: var(--muted); max-width: 36rem; }
 
   <section class="battery">
     <h2><i class="mark" style="--c:var(--s1)" aria-hidden="true"></i>Real sleep, lower standby drain</h2>
-    <p>Close the lid and your RG SP genuinely sleeps, with your game held in memory. Open it and carry on straight away, with nothing reloaded.</p>
-    <p class="headline">In two separate 8-hour tests on a 0.5.0 test build, it used <strong>about 2% of the battery an hour</strong>, with Wi-Fi off or on.</p>
-    <div class="chart chart-pair" role="group" aria-label="Battery used per hour with the lid closed: about 7% for 0.3.0 (semi-stock) software standby, about 2 to 3.2% for 0.4.x hardware sleep with Wi-Fi off, and 2% an hour for 0.5.0 hardware sleep in one 8-hour sleep each with Wi-Fi off and Wi-Fi on">
-      <div class="row">
-        <div class="row-top">
-          <span class="row-name">0.3.0 (semi-stock) <small>software standby</small></span>
-          <span class="row-obs">61% to 47% in 2 h</span>
-        </div>
-        <div class="row-bar">
-          <span class="blocks" style="--c:var(--dim)" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
-          <span class="rate">~7% an hour</span>
-        </div>
-      </div>
-      <div class="row">
-        <div class="row-top">
-          <span class="row-name">0.4.x <small>hardware sleep, Wi-Fi off</small></span>
-          <span class="row-obs"><span>16% in 8 h ·</span> <span>20% in 7.8 h ·</span> <span>24% in 7.6 h</span></span>
-        </div>
-        <div class="row-bar">
-          <span class="blocks" style="--c:var(--s2)" aria-hidden="true"><i></i><i></i><i class="range"></i><i class="part" style="--p:20%"></i></span>
-          <span class="rate">~2 to 3.2% an hour</span>
-        </div>
-      </div>
-      <div class="row">
-        <div class="row-top">
-          <span class="row-name">0.5.0 <small>hardware sleep, Wi-Fi off</small></span>
-          <span class="row-obs">77% to 61% in 8 h</span>
-        </div>
-        <div class="row-bar">
-          <span class="blocks" style="--c:var(--s3)" aria-hidden="true"><i></i><i></i></span>
-          <span class="rate">~2% an hour</span>
-        </div>
-      </div>
-      <div class="row">
-        <div class="row-top">
-          <span class="row-name">0.5.0 <small>hardware sleep, Wi-Fi on</small></span>
-          <span class="row-obs">80% to 64% in 8 h</span>
-        </div>
-        <div class="row-bar">
-          <span class="blocks" style="--c:var(--s3)" aria-hidden="true"><i></i><i></i></span>
-          <span class="rate">~2% an hour</span>
-        </div>
-      </div>
-      <p class="note">Each block is 1% an hour on the battery gauge. 0.3.0: a modified test build held in software standby (ordinary 0.3.0 shuts down after 3 minutes). 0.4.x: three extended sleeps. 0.5.0: matching readings with Wi-Fi off and on don't show identical standby use. Observed readings, not guaranteed battery life or one controlled comparison.</p>
-      <p class="note"><a href="https://github.com/slowphase/slot.advance/blob/main/documentation/sleep-and-battery.md">How it was measured</a></p>
-    </div>
-  </section>
-
-  <section>
-    <h2><i class="mark" style="--c:var(--s3)" aria-hidden="true"></i>Sleep on your schedule</h2>
-    <p>Choose from 3 minutes to 8 hours. After that it shuts down cleanly and restores your game at the next power-on.</p>
+    <p>Close the lid and your game waits in memory. Open it and carry on straight away, with nothing reloaded. Hardware sleep uses <strong>about 2% of the battery an hour</strong>, against roughly 7% for semi-stock software standby.</p>
+    <img class="battery-chart" src="battery-standby-1.0.0.svg" width="720" height="489" loading="lazy" alt="Battery used per hour with the lid closed, from battery-gauge readings: about 7% for semi-stock software standby (a modified 0.3.0 build held in standby, 61% to 47% in 2 hours) and about 2% for slot.advance 1.0.0 hardware sleep. 1.0.0 uses 0.5.0's hardware sleep unchanged; its figure comes from two 8-hour sleeps on a 0.5.0 test build, with Wi-Fi off (77% to 61%) and with Wi-Fi on (80% to 64%)">
+    <p class="note">Observed battery-gauge readings, not guaranteed battery life. <a href="https://github.com/slowphase/slot.advance/blob/main/documentation/sleep-and-battery.md">How it was measured</a></p>
   </section>
 
   <div class="grid">
@@ -296,7 +223,15 @@ section > p { margin: 0 auto; color: var(--muted); max-width: 36rem; }
       <p>Built-in Syncthing keeps your Saves and States in step with a computer or home server on your own network, while the handheld is awake.</p>
     </section>
     <section>
-      <h2><i class="mark" style="--c:var(--s6)" aria-hidden="true"></i>Settings without leaving your game</h2>
+      <h2><i class="mark" style="--c:var(--s6)" aria-hidden="true"></i>RetroAchievements, built in</h2>
+      <p>Off by default. Softcore achievements on mGBA. Start a game online once, and from then on it earns achievements offline too, sent when Wi-Fi next connects.</p>
+    </section>
+    <section>
+      <h2><i class="mark" style="--c:var(--s3)" aria-hidden="true"></i>Sleep on your schedule</h2>
+      <p>Choose from 3 minutes to 8 hours. After that it shuts down cleanly and restores your game at the next power-on.</p>
+    </section>
+    <section>
+      <h2><i class="mark" style="--c:var(--s2)" aria-hidden="true"></i>Settings without leaving your game</h2>
       <p>Tap MENU for Resume, States, Settings and Exit Game. Shader, colour correction, fast-forward speed and sound are remembered for each game.</p>
     </section>
     <section>
@@ -304,7 +239,7 @@ section > p { margin: 0 auto; color: var(--muted); max-width: 36rem; }
       <p>All, Recents and Favourites, and straight back to the last cartridge you played.</p>
     </section>
     <section>
-      <h2><i class="mark" style="--c:var(--s2)" aria-hidden="true"></i>Save states, simplified</h2>
+      <h2><i class="mark" style="--c:var(--s3)" aria-hidden="true"></i>Save states, simplified</h2>
       <p>Five per game, browsed visually, with a check before anything is deleted.</p>
     </section>
     <section>
