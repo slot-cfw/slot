@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src=".github/resources/slot-advance-hero-standby.webp" width="100%" alt="The striped slot.advance logo beside an open Anbernic RG SP (2026) showing the same logo, with the lines: Real Sleep. Instant Resume. Super-Efficient Standby.">
+<img src=".github/resources/slot-advance-hero-1.0.0.webp" width="100%" alt="The striped slot.advance logo beside an open Anbernic RG SP (2026) showing the same logo, with the lines: Real Sleep. Real Saves. Real Achievements.">
 
 # slot.advance
 
