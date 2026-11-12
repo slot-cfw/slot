@@ -1115,7 +1115,8 @@ impl Frontend {
     }
 
     fn grab_link_shot(&mut self, compositor: &mut Compositor) {
-        let open = self.session.app().game_menu_open();
+        let app = self.session.app();
+        let open = app.game_menu_open() || app.invite_card().is_some();
         if !open {
             if self.link_shot_shown {
                 self.link_shot_shown = false;
