@@ -20,14 +20,36 @@ const CRC_CACHE: &str = "Cache/art/crc.txt";
 
 static CRC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-pub fn cached_crc(root: &Path, rom: &Path) -> std::io::Result<u32> {
+fn stamp(rom: &Path) -> std::io::Result<(u64, u64)> {
     let meta = std::fs::metadata(rom)?;
-    let len = meta.len();
     let secs = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_secs());
+    Ok((meta.len(), secs))
+}
+
+pub fn remembered_crcs(root: &Path, roms: &[&Path]) -> Vec<Option<u32>> {
+    let text = {
+        let _held = CRC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::fs::read_to_string(root.join(CRC_CACHE)).unwrap_or_default()
+    };
+    let lines: std::collections::HashMap<&str, &str> = text
+        .lines()
+        .filter_map(|l| Some((l.split('\t').next()?, l)))
+        .collect();
+    roms.iter()
+        .map(|rom| {
+            let (len, secs) = stamp(rom).ok()?;
+            let key = rom.strip_prefix(root).unwrap_or(rom).to_string_lossy();
+            cached_line(lines.get(key.as_ref())?, &key, len, secs)
+        })
+        .collect()
+}
+
+pub fn cached_crc(root: &Path, rom: &Path) -> std::io::Result<u32> {
+    let (len, secs) = stamp(rom)?;
     let key = rom
         .strip_prefix(root)
         .unwrap_or(rom)

@@ -155,7 +155,7 @@ impl Toast {
             Toast::NoLink => "No link support",
             Toast::NoWifi => "This device has no Wi-Fi",
             Toast::LinkEnded => "Link ended",
-            Toast::PeerEnded => "Other player ended the link",
+            Toast::PeerEnded => "Your friend unplugged",
             Toast::BiosMismatch => "BIOS does not match",
             Toast::ColourOn => "Correction On",
             Toast::ColourOff => "Correction Off",

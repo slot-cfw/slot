@@ -131,6 +131,7 @@ pub enum QuickRow {
     CheckUpdates,
     Server,
     Romm,
+    Nickname,
     RommProtocol,
     RommServer,
     RommPort,
@@ -148,7 +149,7 @@ pub enum QuickRow {
 }
 
 impl QuickRow {
-    pub const ALL: [QuickRow; 134 + cfg!(feature = "nds") as usize] = [
+    pub const ALL: [QuickRow; 135 + cfg!(feature = "nds") as usize] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Screen,
@@ -271,6 +272,7 @@ impl QuickRow {
         QuickRow::CheckUpdates,
         QuickRow::Server,
         QuickRow::Romm,
+        QuickRow::Nickname,
         QuickRow::RommProtocol,
         QuickRow::RommServer,
         QuickRow::RommPort,
@@ -307,9 +309,10 @@ impl QuickRow {
         QuickRow::KidShelf,
     ];
 
-    pub const SYSTEM: [QuickRow; 6] = [
+    pub const SYSTEM: [QuickRow; 7] = [
         QuickRow::Wifi,
         QuickRow::DateTime,
+        QuickRow::Nickname,
         QuickRow::LidOff,
         QuickRow::BatteryDisplay,
         QuickRow::CheckUpdates,
@@ -550,7 +553,8 @@ impl QuickRow {
             | QuickRow::LidOff
             | QuickRow::BatteryDisplay
             | QuickRow::CheckUpdates
-            | QuickRow::About => &QuickRow::SYSTEM,
+            | QuickRow::About
+            | QuickRow::Nickname => &QuickRow::SYSTEM,
             QuickRow::WifiPower | QuickRow::Networks => &QuickRow::WIFI,
             QuickRow::FetchArt | QuickRow::Romm | QuickRow::Server => &QuickRow::NETWORK,
             #[cfg(feature = "nds")]
@@ -735,6 +739,7 @@ impl QuickRow {
             QuickRow::Networks => "Network",
             QuickRow::CheckUpdates => "Check for Updates",
             QuickRow::Server => "Gamebit",
+            QuickRow::Nickname => "Nickname",
             QuickRow::Romm => "RomM",
             QuickRow::RommProtocol => "Protocol",
             QuickRow::RommServer | QuickRow::RommPairedServer => "Server",
@@ -854,6 +859,7 @@ impl QuickRow {
                 | QuickRow::CheckUpdates
                 | QuickRow::Server
                 | QuickRow::Romm
+                | QuickRow::Nickname
                 | QuickRow::RommServer
                 | QuickRow::RommPort
                 | QuickRow::RommPair
@@ -1260,6 +1266,12 @@ pub fn quick_value_face(text: &str, lit: bool) -> UndoFace {
     quick_text_face(text, if lit { MENU_INK } else { DIM_INK })
 }
 
+const FAINT_INK: [u8; 3] = [0x6c, 0x6c, 0x76];
+
+pub fn quick_placeholder_face(text: &str, lit: bool) -> UndoFace {
+    quick_text_face(text, if lit { DIM_INK } else { FAINT_INK })
+}
+
 pub fn quick_warning_value_face(text: &str, lit: bool) -> UndoFace {
     let words = quick_value_face(text, lit);
     let (Some((cov, iw, ih)), Some(label)) = (
@@ -1482,16 +1494,26 @@ pub fn fetch_legends(ink: [u8; 3]) -> UndoFace {
     with_hint(button_face(ButtonLegend::B), "Stop", Some(ink), true)
 }
 
-pub fn print_stop_legend(ink: [u8; 3]) -> UndoFace {
-    let (src, w, h) = button_legend(ButtonLegend::B);
+fn small_button(which: ButtonLegend) -> UndoFace {
+    let (src, w, h) = button_legend(which);
     let side = PRINT_STOP_BUTTON;
     let rgba = crate::art::cover_rgba(src, w, h, side, side).unwrap_or_default();
-    let button = UndoFace {
+    UndoFace {
         rgba,
         w: side,
         h: side,
-    };
-    with_hint(button, "Stop", Some(ink), true)
+    }
+}
+
+pub fn print_stop_legend(ink: [u8; 3]) -> UndoFace {
+    with_hint(small_button(ButtonLegend::B), "Stop", Some(ink), true)
+}
+
+pub fn small_prompt_legends(ink: [u8; 3], no: &str, yes: &str) -> [UndoFace; 2] {
+    [
+        with_hint(small_button(ButtonLegend::B), no, Some(ink), true),
+        with_hint(small_button(ButtonLegend::A), yes, Some(ink), true),
+    ]
 }
 
 pub fn fetch_skip_legend(ink: [u8; 3]) -> UndoFace {
@@ -1677,6 +1699,7 @@ pub struct QuickMenu<'a> {
     pub networks: Option<[(TexId, u32, u32); 2]>,
     pub romm: [Option<[(TexId, u32, u32); 2]>; 4],
     pub kid_shelf: Option<[(TexId, u32, u32); 2]>,
+    pub nickname: Option<[(TexId, u32, u32); 2]>,
     pub faces: Option<&'a QuickMenuFaces>,
     pub ground: Option<MenuGround>,
     pub palette: Option<[(TexId, u32, u32); 2]>,
@@ -1757,6 +1780,7 @@ impl QuickMenu<'_> {
                 QuickRow::RommPort => self.romm[2].map(|c| c[lit as usize]),
                 QuickRow::RommStatus => self.romm[3].map(|c| c[lit as usize]),
                 QuickRow::KidShelf => self.kid_shelf.map(|c| c[lit as usize]),
+                QuickRow::Nickname => self.nickname.map(|c| c[lit as usize]),
                 QuickRow::Palette | QuickRow::GbPalette => self.palette.map(|c| c[lit as usize]),
                 QuickRow::GbaBezel => self.gba_bezel.map(|c| c[lit as usize]),
                 QuickRow::GbBezel => self.gb_bezel.map(|c| c[lit as usize]),
@@ -1884,6 +1908,7 @@ fn scrolls(page: &[QuickRow]) -> bool {
         &QuickRow::SHORTCUTS,
         &QuickRow::GENERAL,
         &QuickRow::PLAY_SCREEN,
+        &QuickRow::SYSTEM,
     ]
     .contains(&page)
 }

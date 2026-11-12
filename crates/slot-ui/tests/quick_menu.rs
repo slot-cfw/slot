@@ -102,6 +102,7 @@ fn the_rows_run_in_the_order_the_user_chose() {
         [
             "Wi-Fi",
             "Date & Time",
+            "Nickname",
             "Lid Power Off",
             "Battery Display",
             "Check for Updates",
@@ -215,6 +216,7 @@ fn the_rows_run_in_the_order_the_user_chose() {
             QuickRow::CheckUpdates,
             QuickRow::Server,
             QuickRow::Romm,
+            QuickRow::Nickname,
             QuickRow::RommServer,
             QuickRow::RommPort,
             QuickRow::RommPair,
@@ -703,7 +705,14 @@ fn system_holds_wifi_the_clock_lid_power_off_updates_and_about() {
         assert_eq!(row.parent(), Some(QuickRow::System), "{row:?}");
         assert!(!QuickRow::GENERAL.contains(&row), "{row:?}");
     }
+    let at = |r: QuickRow| QuickRow::SYSTEM.iter().position(|g| *g == r);
+    assert_eq!(
+        at(QuickRow::Nickname),
+        at(QuickRow::DateTime).map(|i| i + 1)
+    );
     assert_eq!(QuickRow::SYSTEM.last(), Some(&QuickRow::About));
+    assert_eq!(QuickRow::Nickname.parent(), Some(QuickRow::System));
+    assert!(!QuickRow::NETWORK.contains(&QuickRow::Nickname));
     assert_eq!(QuickRow::WifiPower.parent(), Some(QuickRow::Wifi));
     assert_eq!(QuickRow::CheckUpdates.parent(), Some(QuickRow::System));
     assert!(!QuickRow::BatteryDisplay.opens());

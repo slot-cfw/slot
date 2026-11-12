@@ -87,8 +87,8 @@ pub use clock::{
 pub use draw::{Canvas, Draw, TexId, OUT_H, OUT_W};
 pub use edit_text::{heading_text_face, stack_name_face};
 pub use footer::{
-    draw_corners, draw_footer, draw_kid_icon, draw_wifi_icon, footer_y, Printed, FOOTER_Y,
-    KID_ICON_PX,
+    draw_corners, draw_footer, draw_kid_icon, draw_wifi_icon, footer_y, kid_icon_by_clock, Printed,
+    FOOTER_Y, KID_ICON_PX,
 };
 pub use guide::{
     cell, fitting_zoom, guide_help_face, mono_font, page_box, Guide, GuideGlyphs, GuideView,
@@ -128,10 +128,11 @@ pub use quick_menu::{
     add_legend, clock_legend_faces, core_button_legends, delete_legends, draw_menu_ground,
     fetch_choice_legends, fetch_legends, fetch_skip_legend, link_button_legends,
     picking_legend_faces, print_stop_legend, prompt_legends, quick_description_face,
-    quick_label_face, quick_legend_faces, quick_pointer_face, quick_row_top, quick_row_top_at,
-    quick_scroll, quick_value_face, quick_warning_value_face, quick_window, repair_legends,
-    studio_legend, update_legends, visible_rows, MenuGround, QuickMenu, QuickMenuFaces, QuickRow,
-    QuickScroll, QuickValue, StudioGlyph, QUICK_EDGE, QUICK_LABEL_X, QUICK_PITCH, QUICK_VISIBLE,
+    quick_label_face, quick_legend_faces, quick_placeholder_face, quick_pointer_face,
+    quick_row_top, quick_row_top_at, quick_scroll, quick_value_face, quick_warning_value_face,
+    quick_window, repair_legends, small_prompt_legends, studio_legend, update_legends,
+    visible_rows, MenuGround, QuickMenu, QuickMenuFaces, QuickRow, QuickScroll, QuickValue,
+    StudioGlyph, QUICK_EDGE, QUICK_LABEL_X, QUICK_PITCH, QUICK_VISIBLE,
 };
 pub use rebuild::{headline_face, rebuild_count_face, rebuild_title_face, RebuildScreen};
 pub use receipt::{receipt_blank, receipt_face, ReceiptText};

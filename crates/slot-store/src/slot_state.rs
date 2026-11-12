@@ -469,6 +469,7 @@ pub struct SlotState {
     pub show_titles: bool,
     pub battery_display: BatteryDisplay,
     pub wifi_off: bool,
+    pub nickname: String,
     pub gb_core: Core,
     pub left_stick_dpad: bool,
     pub lid_off_min: Option<u8>,
@@ -657,6 +658,7 @@ impl Default for SlotState {
             show_titles: false,
             battery_display: BatteryDisplay::Both,
             wifi_off: false,
+            nickname: String::new(),
             gb_core: Core::Gambatte,
             left_stick_dpad: true,
             lid_off_min: None,
@@ -787,6 +789,9 @@ pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
     if s.wifi_off {
         text.push_str("wifi_off=1\n");
     }
+    if !s.nickname.is_empty() {
+        text.push_str(&format!("nickname={}\n", s.nickname));
+    }
     text.push_str(&format!("gb_core={}\n", s.gb_core.as_str()));
     text.push_str(&format!("left_stick_dpad={}\n", s.left_stick_dpad as u8));
     text.push_str(&format!("resume_insert={}\n", s.resume_insert as u8));
@@ -894,6 +899,7 @@ fn parse(text: &str) -> Option<SlotState> {
     let mut show_titles = None;
     let mut battery_display = None;
     let mut wifi_off = None;
+    let mut nickname = None;
     let mut gb_core = None;
     let mut left_stick_dpad = None;
     let mut lid_off_min = None;
@@ -963,6 +969,7 @@ fn parse(text: &str) -> Option<SlotState> {
             "show_titles" => show_titles = flag(value),
             "battery_display" => battery_display = BatteryDisplay::parse(value),
             "wifi_off" => wifi_off = flag(value),
+            "nickname" => nickname = Some(value.to_string()),
             "gb_core" => gb_core = Core::parse(value).filter(|c| c.runs(Platform::Gb)),
             "left_stick_dpad" => left_stick_dpad = flag(value),
             "lid_off_min" => lid_off_min = value.parse().ok().filter(|m| LID_OFF_MIN.contains(m)),
@@ -1045,6 +1052,7 @@ fn parse(text: &str) -> Option<SlotState> {
         show_titles: show_titles.unwrap_or(fallback.show_titles),
         battery_display: battery_display.unwrap_or(fallback.battery_display),
         wifi_off: wifi_off.unwrap_or(fallback.wifi_off),
+        nickname: nickname.unwrap_or_default(),
         gb_core: gb_core.unwrap_or(Core::Mgba),
         left_stick_dpad: left_stick_dpad.unwrap_or(fallback.left_stick_dpad),
         lid_off_min,

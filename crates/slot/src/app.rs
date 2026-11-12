@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -25,12 +25,15 @@ use slot_ui::{
 use crate::art::jobs::{no_art_jobs, ArtEvent, ArtJob, ArtJobs};
 use crate::art::make::Kind as ArtKind;
 use crate::audio::Sfx;
+use crate::ble::{Ble, BleWant, Heard};
 use crate::core_picker::{Chip, CorePicker, Outcome, Press};
 use crate::fetch_art::{
     stage_at, FetchArt, FetchTex, Landed as ArtLanded, Run as ArtRun, Scene as ArtScene, Stage,
 };
+use crate::invite::{best_host, worth_a_look, Advert, Spot};
+use crate::invite_card::{InviteCard, InviteFaces};
 use crate::link_kind::{link_carried, link_dual, link_kind, serial_option, LinkKind};
-use crate::link_radio::{radio_jobs, LinkRole, RadioJob, RadioJobs};
+use crate::link_radio::{radio_jobs, HostAp, LinkRole, RadioJob, RadioJobs, RadioRole};
 use crate::link_screen::LinkSprites;
 use crate::link_start::{link_port, LinkFail, LinkProgress, LinkStarter, LinkStep};
 use crate::loading_mark::LoadingMark;
@@ -223,6 +226,23 @@ struct LinkStarting {
     client_id: u16,
 }
 
+type GameKnown = (u32, Vec<(Core, u32)>);
+
+struct GameFacts {
+    rom: PathBuf,
+    rx: std::sync::mpsc::Receiver<Option<GameKnown>>,
+    known: Option<GameKnown>,
+}
+
+type LinkSpawn = Box<dyn FnMut(RadioRole, u16) -> LinkStarter + Send>;
+
+type BiosList = Vec<(Platform, Core, u32)>;
+
+struct KidBios {
+    rx: std::sync::mpsc::Receiver<BiosList>,
+    known: Option<BiosList>,
+}
+
 struct Reload {
     stem: String,
     role: LinkRow,
@@ -230,6 +250,7 @@ struct Reload {
     from: LinkKind,
     from_serial: &'static str,
     fallback: bool,
+    join: Option<HostAp>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -340,7 +361,9 @@ const ROMM_POLL_MS: Millis = 30_000;
 
 pub const LINKED_HOLD_MS: Millis = 1000;
 
-pub const UNPLUG_HOLD_MS: Millis = 420;
+pub const UNPLUG_HOLD_MS: Millis = slot_ui::HUD_MS;
+
+pub const RADIO_BYE_MS: Millis = 250;
 
 pub type NameFace = (String, [(TexId, u32, u32); 2]);
 
@@ -432,6 +455,7 @@ pub enum KeyboardFor {
     NetworkName,
     RommServer,
     RommPort,
+    Nickname,
 }
 
 pub struct NetLegends {
@@ -616,10 +640,20 @@ pub struct App {
     link_loaded: Option<&'static str>,
     link_reload: Option<(String, &'static str)>,
     reload: Option<Reload>,
+    link_core: Option<Core>,
+    link_kind_once: Option<LinkKind>,
+    invite_return: Option<crate::editing::Seat>,
+    join_later: Option<Heard>,
+    switch_back: bool,
+    reloading_back: bool,
+    joined_link: bool,
+    radio_bye: Option<Millis>,
     link_menu_faces: Vec<(TexId, u32, u32)>,
     link_linked_face: Option<(TexId, u32, u32)>,
     link_step_faces: Vec<(TexId, u32, u32)>,
     link_fail_faces: Vec<(TexId, u32, u32)>,
+    link_fail_wireless_faces: Vec<Option<(TexId, u32, u32)>>,
+    link_fail_hint_faces: Vec<Option<(TexId, u32, u32)>>,
     link_legend_faces: Vec<(TexId, u32)>,
     starting: Option<LinkStarting>,
     link_transport: Option<(u16, Box<dyn LinkChannel>)>,
@@ -649,6 +683,24 @@ pub struct App {
     palette_pending: Option<GbColors>,
     sunlight_manual: Option<u8>,
     link_player: Option<u8>,
+    join_target: Option<HostAp>,
+    ble: Box<dyn Ble>,
+    ble_on: bool,
+    heard: HashMap<u16, Heard>,
+    first_heard: HashMap<u16, Millis>,
+    session: Option<u16>,
+    hosted: Option<HostAp>,
+    join_wait: Option<Millis>,
+    facts: Option<GameFacts>,
+    link_spawn: LinkSpawn,
+    invite: Option<InviteCard>,
+    ignored: HashSet<u16>,
+    finder: Option<crate::invite_find::GameFinder>,
+    looked: HashMap<u16, Option<String>>,
+    finding: Option<(u16, u32)>,
+    kid_listening: bool,
+    kid_bios: Option<KidBios>,
+    invite_faces: Option<InviteFaces>,
     platform: Platform,
     named_core: bool,
     video_mode: VideoMode,
@@ -667,6 +719,7 @@ pub struct App {
     quick_network_faces: Option<[(TexId, u32, u32); 2]>,
     quick_romm_faces: [Option<[(TexId, u32, u32); 2]>; 4],
     quick_kid_shelf_faces: Option<[(TexId, u32, u32); 2]>,
+    quick_nickname_faces: Option<[(TexId, u32, u32); 2]>,
     kid_faces: Vec<(TexId, u32, u32)>,
     kid_prompt: Option<KidMode>,
     kid_unlocked: bool,
@@ -1115,10 +1168,20 @@ impl App {
             link_loaded: None,
             link_reload: None,
             reload: None,
+            link_core: None,
+            link_kind_once: None,
+            invite_return: None,
+            join_later: None,
+            switch_back: false,
+            reloading_back: false,
+            joined_link: false,
+            radio_bye: None,
             link_menu_faces: Vec::new(),
             link_linked_face: None,
             link_step_faces: Vec::new(),
             link_fail_faces: Vec::new(),
+            link_fail_wireless_faces: Vec::new(),
+            link_fail_hint_faces: Vec::new(),
             link_legend_faces: Vec::new(),
             starting: None,
             link_transport: None,
@@ -1148,6 +1211,24 @@ impl App {
             palette_pending: None,
             sunlight_manual: None,
             link_player: None,
+            join_target: None,
+            ble: crate::ble::ble(),
+            ble_on: false,
+            heard: HashMap::new(),
+            first_heard: HashMap::new(),
+            session: None,
+            hosted: None,
+            join_wait: None,
+            facts: None,
+            link_spawn: Box::new(LinkStarter::spawn),
+            invite: None,
+            ignored: HashSet::new(),
+            finder: None,
+            looked: HashMap::new(),
+            finding: None,
+            kid_listening: false,
+            kid_bios: None,
+            invite_faces: None,
             platform: Platform::default(),
             named_core: false,
             video_mode: VideoMode::default(),
@@ -1166,6 +1247,7 @@ impl App {
             quick_network_faces: None,
             quick_romm_faces: [None; 4],
             quick_kid_shelf_faces: None,
+            quick_nickname_faces: None,
             kid_faces: Vec::new(),
             kid_prompt: None,
             kid_unlocked: false,
@@ -2838,6 +2920,7 @@ impl App {
             QuickRow::Romm
             | QuickRow::RommServer
             | QuickRow::KidShelf
+            | QuickRow::Nickname
             | QuickRow::RommPort
             | QuickRow::RommPair
             | QuickRow::RommStatus
@@ -2952,6 +3035,30 @@ impl App {
         self.quick_kid_shelf_faces = Some([dim, lit]);
     }
 
+    pub fn set_quick_nickname_faces(&mut self, dim: (TexId, u32, u32), lit: (TexId, u32, u32)) {
+        self.quick_nickname_faces = Some([dim, lit]);
+    }
+
+    pub fn nickname(&self) -> String {
+        if self.state.nickname.is_empty() {
+            self.device_name().to_string()
+        } else {
+            self.state.nickname.clone()
+        }
+    }
+
+    pub fn nickname_set(&self) -> bool {
+        !self.state.nickname.is_empty()
+    }
+
+    fn device_name(&self) -> &'static str {
+        match self.panel {
+            (720, 480) => "RG SP",
+            (640, 480) => "RG35XXSP",
+            _ => "slot",
+        }
+    }
+
     pub fn set_kid_icon_faces(&mut self, faces: [(TexId, u32, u32); 2]) {
         self.kid_icon_faces = Some(faces);
     }
@@ -2962,7 +3069,14 @@ impl App {
         }
         let wifi = self.wifi_up().then(|| self.wifi_face()).flatten();
         let face = self.kid_icon_faces.map(|f| f[usize::from(self.light())]);
-        slot_ui::draw_kid_icon(self.canvas(), self.gauge(), wifi, face, out);
+        slot_ui::draw_kid_icon(
+            self.canvas(),
+            self.gauge(),
+            wifi,
+            self.shelf_clock,
+            face,
+            out,
+        );
     }
 
     pub fn set_kid_faces(&mut self, faces: Vec<(TexId, u32, u32)>) {
@@ -3599,6 +3713,9 @@ impl App {
         let mut hidden = Vec::new();
         if self.state.kid_mode != KidMode::OneShelf {
             hidden.push(QuickRow::KidShelf);
+        }
+        if cfg!(feature = "nds") || self.kid_locked() {
+            hidden.push(QuickRow::Nickname);
         }
         if !own {
             hidden.push(QuickRow::WallpaperTint);
@@ -4526,7 +4643,10 @@ impl App {
         let Some((cart, auto)) = self.auto_link(stem) else {
             return (LinkKind::Cable, "auto");
         };
-        let chosen = self.link_choices.get(stem).copied().unwrap_or(auto);
+        let chosen = self
+            .link_kind_once
+            .or_else(|| self.link_choices.get(stem).copied())
+            .unwrap_or(auto);
         (chosen, serial_option(chosen, auto, &cart.code, &cart.title))
     }
 
@@ -4540,6 +4660,37 @@ impl App {
             lost_at: None,
         });
         self.sync_link_badge();
+        if self.link_core.is_some() {
+            self.joined_link = true;
+            self.retire_switched_resume();
+        }
+    }
+
+    fn retire_switched_resume(&mut self) {
+        if self.link_core != Some(Core::Gpsp) || self.core != Core::Gpsp {
+            return;
+        }
+        let (Some(root), Some(cart)) = (self.root.clone(), self.seated_cart()) else {
+            return;
+        };
+        let (stem, platform) = (cart.stem.clone(), cart.platform);
+        let own = slot_store::core_for_platform(&root, &stem, platform, self.gb_core());
+        if own == Core::Gpsp {
+            return;
+        }
+        if let Some(h) = self.pending_save.take() {
+            let _ = h.join();
+        }
+        let ring = StateRing::new(&root, platform, own, &stem);
+        match ring.retire_resume(&format_stamp(self.wall_secs())) {
+            Ok(Some(to)) => eprintln!(
+                "slot: link: gpSP keeps its own save, moved the {} resume to {}",
+                own.as_str(),
+                to.display()
+            ),
+            Ok(None) => {}
+            Err(e) => eprintln!("slot: link: could not move the resume aside: {e}"),
+        }
     }
 
     pub fn link_client_id(&self) -> Option<u16> {
@@ -4595,9 +4746,23 @@ impl App {
     }
 
     pub fn end_link(&mut self) {
+        let live = self.link.is_some();
+        self.ble_off();
+        self.end_switch();
+        self.join_target = None;
         self.link = None;
         self.link_player = None;
         self.sync_link_badge();
+        self.radio_bye = Some(self.now() + RADIO_BYE_MS);
+        if !live {
+            self.radio_down();
+        }
+    }
+
+    fn radio_down(&mut self) {
+        if self.radio_bye.take().is_none() {
+            return;
+        }
         self.radio.ask(RadioJob::Down);
         self.radio.ask(RadioJob::Cool);
         if self.state.wifi_off {
@@ -4904,6 +5069,7 @@ impl App {
 
     pub fn restart(&mut self) {
         self.settle_saves();
+        self.drop_ble();
         if let Some(power) = &mut self.power {
             power.restart();
         }
@@ -5009,10 +5175,601 @@ impl App {
         self.core
     }
 
+    pub fn set_join_target(&mut self, ap: Option<HostAp>) {
+        self.join_target = ap;
+    }
+
+    pub fn join_target(&self) -> Option<HostAp> {
+        self.join_target
+    }
+
+    pub fn set_ble(&mut self, ble: Box<dyn Ble>) {
+        self.ble = ble;
+        self.ble_on = false;
+        self.kid_listening = false;
+    }
+
+    pub fn set_link_spawn(&mut self, spawn: LinkSpawn) {
+        self.link_spawn = spawn;
+    }
+
+    fn start_role(&mut self, role: LinkRow, since: Millis) {
+        match role {
+            LinkRow::Host => {
+                eprintln!(
+                    "slot: invite: host radio asked at {:.0} ms",
+                    crate::boot_time::ms()
+                );
+                self.radio_down();
+                let starter = (self.link_spawn)(RadioRole::Host, link_port());
+                self.start_link_from(starter, role.client_id(), since);
+                if self.starting.is_some() {
+                    self.learn_game();
+                    self.ble.set(BleWant::Ready);
+                    self.ble_on = true;
+                }
+            }
+            LinkRow::Join => self.listen_for_host(since),
+        }
+    }
+
+    fn listen_for_host(&mut self, since: Millis) {
+        if self.art_busy() {
+            return self.refuse();
+        }
+        self.learn_game();
+        self.join_target = None;
+        self.ble.set(BleWant::Listen);
+        self.ble_on = true;
+        self.join_wait = Some(self.now());
+        self.game_menu = Some(GameMenu::Working {
+            role: LinkRow::Join,
+            step: LinkStep::Waiting,
+            since,
+        });
+    }
+
+    pub fn link_core(&self) -> Option<Core> {
+        self.link_core
+    }
+
+    fn join_host(&mut self, heard: Heard) {
+        let ap = HostAp {
+            freq_mhz: heard.advert.freq_mhz,
+            bssid: heard.advert.bssid,
+        };
+        self.ble_off();
+        self.join_target = Some(ap);
+        self.link_core = Some(heard.advert.core);
+        self.link_kind_once = Some(heard.advert.kind);
+        self.link_hardware = heard.advert.kind;
+        if self.seated().is_none() {
+            if heard.advert.core == Core::Mgba {
+                self.link_player = Some(LinkRow::Join.client_id() as u8);
+            }
+            self.join_later = Some(heard);
+            return;
+        }
+        self.pick_link_for(LinkRow::Join, Some(ap));
+    }
+
+    fn start_join(&mut self, ap: HostAp, since: Millis) {
+        self.radio_down();
+        let starter = (self.link_spawn)(RadioRole::Join(ap), link_port());
+        self.start_link_from(starter, LinkRow::Join.client_id(), since);
+        self.ble_off();
+        if self.starting.is_none() {
+            self.close_game_menu();
+        }
+    }
+
+    fn end_switch(&mut self) {
+        let core = self.link_core.take();
+        let kind = self.link_kind_once.take();
+        self.join_later = None;
+        if core.is_some() || kind.is_some() {
+            self.switch_back = true;
+        }
+    }
+
+    fn drop_pending_switch(&mut self) {
+        self.join_later = None;
+        self.link_core = None;
+        self.link_kind_once = None;
+        self.link_player = None;
+        self.join_target = None;
+        self.switch_back = false;
+        self.joined_link = false;
+        if matches!(self.phase, Phase::Ejecting { .. }) {
+            return;
+        }
+        if let Some(seat) = self.invite_return.take() {
+            self.sit(seat);
+        }
+    }
+
+    fn settle_switch(&mut self) {
+        if self.join_later.is_some() && !matches!(self.phase, Phase::Inserting { .. }) {
+            self.drop_pending_switch();
+        }
+        let busy = self.link_active()
+            || self.starting.is_some()
+            || self.reload.is_some()
+            || self.link_reload.is_some()
+            || self.game_menu.is_some()
+            || self.join_later.is_some();
+        if busy {
+            return;
+        }
+        let joined = std::mem::take(&mut self.joined_link);
+        self.end_switch();
+        if !std::mem::take(&mut self.switch_back) {
+            return;
+        }
+        if self.seated().is_none() {
+            self.link_player = None;
+            return;
+        }
+        let (Some(root), Some(cart)) = (self.root.clone(), self.seated_cart()) else {
+            return;
+        };
+        let (stem, platform) = (cart.stem.clone(), cart.platform);
+        let own = slot_store::core_for_platform(&root, &stem, platform, self.gb_core());
+        let (_, serial) = self.link_mode(&stem);
+        let moved = own != self.core
+            || (own == Core::Gpsp && self.link_loaded.is_some_and(|loaded| loaded != serial))
+            || (joined && self.core == Core::Mgba);
+        if moved {
+            self.link_player = None;
+            self.link_reload = Some((stem, serial));
+            self.reloading_back = true;
+        }
+    }
+
+    fn invite_seat(&self, stem: &str, platform: Platform) -> Option<crate::editing::Seat> {
+        let holds = |at: usize| {
+            self.shelves[at]
+                .1
+                .carts
+                .iter()
+                .position(|c| c.stem == stem && c.platform.hardware() == platform)
+                .map(|index| crate::editing::Seat { shelf: at, index })
+        };
+        std::iter::once(self.shelf_at)
+            .chain(0..self.shelves.len())
+            .find_map(holds)
+    }
+
+    fn drop_ble(&mut self) {
+        self.ble_off();
+        self.ble = Box::new(crate::ble::NoBle);
+    }
+
+    fn ble_off(&mut self) {
+        self.session = None;
+        self.hosted = None;
+        self.join_wait = None;
+        if std::mem::take(&mut self.ble_on) {
+            self.ble.set(BleWant::Off);
+        }
+    }
+
+    fn learn_game(&mut self) {
+        let (Some(root), Some(cart)) = (self.root.clone(), self.seated_cart()) else {
+            return;
+        };
+        if self.facts.as_ref().is_some_and(|f| f.rom == cart.rom) {
+            return;
+        }
+        let (rom, platform) = (cart.rom.clone(), cart.platform);
+        let path = rom.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let known = match crate::art::rom::cached_crc(&root, &path) {
+                Ok(crc) => Some((
+                    crc,
+                    [Core::Mgba, Core::Gpsp, Core::Gambatte]
+                        .into_iter()
+                        .map(|c| (c, crate::root::bios_crc(&root, platform, c)))
+                        .collect(),
+                )),
+                Err(e) => {
+                    eprintln!("slot: invite: could not hash {}: {e}", path.display());
+                    None
+                }
+            };
+            let _ = tx.send(known);
+        });
+        self.facts = Some(GameFacts {
+            rom,
+            rx,
+            known: None,
+        });
+    }
+
+    fn game_known(&self) -> Option<&GameKnown> {
+        let cart = self.seated_cart()?;
+        self.facts
+            .as_ref()
+            .filter(|f| f.rom == cart.rom)?
+            .known
+            .as_ref()
+    }
+
+    fn local_advert(&self, ap: HostAp) -> Option<Advert> {
+        let cart = self.seated_cart()?;
+        let (crc, bios) = self.game_known()?;
+        Some(Advert {
+            session: self.session?,
+            game_crc: *crc,
+            core: self.core,
+            bios_crc: bios_of(bios, self.core),
+            kind: self.link_mode(&cart.stem).0,
+            freq_mhz: ap.freq_mhz,
+            bssid: ap.bssid,
+            platform: cart.platform.hardware(),
+        })
+    }
+
+    fn advertise(&mut self) {
+        let Some(ap) = self.hosted else {
+            return;
+        };
+        let Some(advert) = self.local_advert(ap) else {
+            return;
+        };
+        self.hosted = None;
+        let nickname = self.nickname();
+        eprintln!(
+            "slot: invite: host advert {:04x} sent to the driver at {:.0} ms, nickname {nickname:?}",
+            advert.session,
+            crate::boot_time::ms()
+        );
+        self.ble.set(BleWant::Advertise {
+            advert: crate::invite::encode(&advert),
+            scan: crate::invite::scan_response(&nickname),
+        });
+        self.ble_on = true;
+    }
+
+    fn matching_host(&self, now: Millis) -> Option<Heard> {
+        let cart = self.seated_cart()?;
+        let (crc, bios) = self.game_known()?;
+        let spot = Spot::Playing {
+            platform: cart.platform.hardware(),
+            crc: *crc,
+        };
+        let ignored = std::collections::HashSet::new();
+        best_host(
+            &self.heard,
+            |a| worth_a_look(a, &spot, &ignored, bios_of(bios, a.core)),
+            now,
+        )
+        .cloned()
+    }
+
+    fn poll_ble(&mut self) {
+        let clock = crate::ble::clock();
+        for mut heard in self.ble.heard() {
+            let session = heard.advert.session;
+            match self.heard.get(&session) {
+                Some(old) if heard.nickname.is_none() => heard.nickname = old.nickname.clone(),
+                Some(_) => {}
+                None => eprintln!(
+                    "slot: invite: heard session {session:04x} at {:.0} ms, {}",
+                    crate::boot_time::ms(),
+                    match &heard.nickname {
+                        Some(name) => format!("nickname {name:?}"),
+                        None => "no nickname yet".to_string(),
+                    }
+                ),
+            }
+            self.first_heard.entry(session).or_insert(heard.at);
+            self.heard.insert(session, heard);
+        }
+        self.heard
+            .retain(|_, h| clock.saturating_sub(h.at) <= crate::invite::FRESH_MS);
+        let heard = &self.heard;
+        self.first_heard.retain(|s, _| heard.contains_key(s));
+        if let Some(facts) = &mut self.facts {
+            if facts.known.is_none() {
+                if let Ok(Some(known)) = facts.rx.try_recv() {
+                    facts.known = Some(known);
+                }
+            }
+        }
+        self.advertise();
+        let Some(waited) = self.join_wait else {
+            return;
+        };
+        if let Some(heard) = self.matching_host(clock) {
+            return self.join_host(heard);
+        }
+        if self.now().saturating_sub(waited) >= crate::link_net::HOST_BOUND.as_millis() as Millis {
+            self.ble_off();
+            let (role, worked) = self.working_role(LinkRow::Join.client_id());
+            self.game_menu = Some(GameMenu::Failed {
+                role,
+                fail: LinkFail::NobodyCame,
+                worked,
+                since: self.now(),
+            });
+        }
+    }
+
+    pub fn invite_card(&self) -> Option<&InviteCard> {
+        self.invite.as_ref()
+    }
+
+    pub fn set_invite_faces(&mut self, faces: InviteFaces) {
+        self.invite_faces = Some(faces);
+    }
+
+    fn kid_listens(&self) -> bool {
+        self.kid_locked()
+            && matches!(self.phase, Phase::Shelf | Phase::Playing { .. })
+            && !self.link_active()
+            && self.starting.is_none()
+            && self.game_menu.is_none()
+            && !self.shutting_down()
+            && !self.relaunching()
+    }
+
+    fn poll_invites(&mut self) {
+        if !self.kid_locked() || self.shutting_down() || self.relaunching() {
+            self.invite = None;
+        }
+        let listen = self.kid_listens();
+        if listen && !(self.ble_on && self.kid_listening) {
+            self.ble.set(BleWant::Listen);
+            self.ble_on = true;
+            self.kid_listening = true;
+        } else if !listen && self.kid_listening {
+            self.kid_listening = false;
+            self.ble_off();
+        }
+        if let Some(card) = &mut self.invite {
+            match self.heard.get(&card.session()) {
+                None => self.invite = None,
+                Some(h) if h.nickname.is_some() && h.nickname != card.heard.nickname => {
+                    eprintln!(
+                        "slot: invite: card nickname {:?} arrived at {:.0} ms",
+                        h.nickname.as_deref().unwrap_or_default(),
+                        crate::boot_time::ms()
+                    );
+                    card.heard.nickname = h.nickname.clone();
+                }
+                Some(_) => {}
+            }
+        }
+        if !listen {
+            return;
+        }
+        self.learn_bios();
+        self.take_found();
+        if self.invite.is_some() {
+            return;
+        }
+        match self.phase {
+            Phase::Playing { .. } => self.invite_in_game(),
+            Phase::Shelf => self.invite_on_shelf(),
+            _ => {}
+        }
+    }
+
+    fn learn_bios(&mut self) {
+        if let Some(bios) = &mut self.kid_bios {
+            if bios.known.is_none() {
+                if let Ok(list) = bios.rx.try_recv() {
+                    bios.known = Some(list);
+                }
+            }
+            return;
+        }
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut list = Vec::new();
+            for platform in [Platform::Gba, Platform::Gb, Platform::Gbc] {
+                for core in [Core::Mgba, Core::Gpsp, Core::Gambatte] {
+                    list.push((platform, core, crate::root::bios_crc(&root, platform, core)));
+                }
+            }
+            let _ = tx.send(list);
+        });
+        self.kid_bios = Some(KidBios { rx, known: None });
+    }
+
+    fn kid_bios_of(&self, platform: Platform, core: Core) -> Option<u32> {
+        self.kid_bios
+            .as_ref()?
+            .known
+            .as_ref()?
+            .iter()
+            .find(|(p, c, _)| *p == platform && *c == core)
+            .map(|(_, _, crc)| *crc)
+    }
+
+    fn named_or_waited(&self, heard: &Heard, clock: Millis) -> bool {
+        if heard.nickname.is_some() {
+            return true;
+        }
+        match self.first_heard.get(&heard.advert.session) {
+            Some(at) => clock.saturating_sub(*at) >= crate::invite::NAME_WAIT_MS,
+            None => true,
+        }
+    }
+
+    fn open_invite(&mut self, heard: Heard, stem: String) {
+        let title = slot_ui::clean_label(&stem);
+        self.shelf_mut().release_hold();
+        self.play_held = None;
+        eprintln!(
+            "slot: invite: card opened for session {:04x} at {:.0} ms, {} ms after first heard, {}",
+            heard.advert.session,
+            crate::boot_time::ms(),
+            self.first_heard
+                .get(&heard.advert.session)
+                .map_or(0, |at| crate::ble::clock().saturating_sub(*at)),
+            match &heard.nickname {
+                Some(name) => format!("nickname {name:?}"),
+                None => "no nickname, showing the fallback".to_string(),
+            }
+        );
+        self.invite = Some(InviteCard {
+            heard,
+            stem,
+            title,
+            shown_at: self.now(),
+        });
+    }
+
+    fn invite_in_game(&mut self) {
+        self.learn_game();
+        let Some(cart) = self.seated_cart() else {
+            return;
+        };
+        let stem = cart.stem.clone();
+        let platform = cart.platform.hardware();
+        let Some((crc, bios)) = self.game_known() else {
+            return;
+        };
+        let spot = Spot::Playing {
+            platform,
+            crc: *crc,
+        };
+        let found = best_host(
+            &self.heard,
+            |a| worth_a_look(a, &spot, &self.ignored, bios_of(bios, a.core)),
+            crate::ble::clock(),
+        )
+        .cloned();
+        if let Some(heard) = found {
+            if self.named_or_waited(&heard, crate::ble::clock()) {
+                self.open_invite(heard, stem);
+            }
+        }
+    }
+
+    fn invite_on_shelf(&mut self) {
+        let clock = crate::ble::clock();
+        let mut fresh: Vec<&Heard> = self
+            .heard
+            .values()
+            .filter(|h| clock.saturating_sub(h.at) <= crate::invite::FRESH_MS)
+            .filter(|h| {
+                self.kid_bios_of(h.advert.platform, h.advert.core)
+                    .is_some_and(|bios| worth_a_look(&h.advert, &Spot::Shelf, &self.ignored, bios))
+            })
+            .collect();
+        fresh.sort_by_key(|h| std::cmp::Reverse(h.rssi));
+        let (mut ask, mut found) = (None, None);
+        for heard in fresh {
+            match self.looked.get(&heard.advert.session) {
+                Some(Some(stem)) => {
+                    found = Some((heard.clone(), stem.clone()));
+                    break;
+                }
+                Some(None) => {}
+                None if ask.is_none() => ask = Some(heard.advert),
+                None => {}
+            }
+        }
+        if let Some((heard, stem)) = found {
+            if self.named_or_waited(&heard, clock) {
+                self.open_invite(heard, stem);
+            }
+            return;
+        }
+        if let (Some(advert), None) = (ask, self.finding) {
+            self.ask_finder(advert);
+        }
+    }
+
+    fn ask_finder(&mut self, advert: Advert) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let finder = self
+            .finder
+            .get_or_insert_with(|| crate::invite_find::GameFinder::spawn(root));
+        finder.ask(advert.platform, advert.game_crc);
+        eprintln!(
+            "slot: invite: finder asked for {:08x} at {:.0} ms",
+            advert.game_crc,
+            crate::boot_time::ms()
+        );
+        self.finding = Some((advert.session, advert.game_crc));
+    }
+
+    fn take_found(&mut self) {
+        let Some(finder) = &mut self.finder else {
+            return;
+        };
+        while let Some((crc, stem)) = finder.answer() {
+            if let Some((session, asked)) = self.finding {
+                if asked == crc {
+                    self.finding = None;
+                    self.looked.insert(session, stem);
+                }
+            }
+        }
+    }
+
+    fn invite_input(&mut self, action: Action) {
+        match action {
+            Action::GbaDown(Btn::B) => {
+                if let Some(card) = self.invite.take() {
+                    self.ignored.insert(card.session());
+                }
+            }
+            Action::GbaDown(Btn::A) => self.accept_invite(),
+            Action::VolumeUp | Action::VolumeDown | Action::MuteToggle => {
+                self.adjust(action);
+            }
+            _ => {}
+        }
+    }
+
+    fn accept_invite(&mut self) {
+        let Some(card) = self.invite.take() else {
+            return;
+        };
+        eprintln!(
+            "slot: invite: card accepted at {:.0} ms",
+            crate::boot_time::ms()
+        );
+        self.ignored.insert(card.session());
+        if self.seated().is_some() {
+            self.flush_resume();
+        } else if self.on_shelf() {
+            let Some(seat) = self.invite_seat(&card.stem, card.heard.advert.platform) else {
+                return;
+            };
+            self.invite_return = Some(self.here());
+            self.sit(seat);
+            self.insert(false);
+        }
+        self.join_host(card.heard);
+    }
+
     pub fn link_reload_done(&mut self) {
+        self.reloading_back = false;
         let Some(reload) = self.reload.take() else {
             return;
         };
+        if reload.fallback && reload.join.is_some() {
+            let worked = self.working_role(LinkRow::Join.client_id()).1;
+            self.game_menu = Some(GameMenu::Failed {
+                role: LinkRow::Join,
+                fail: LinkFail::NobodyCame,
+                worked,
+                since: self.now(),
+            });
+            return;
+        }
         if reload.fallback {
             self.link_choices.insert(reload.stem, reload.from);
             self.close_game_menu();
@@ -5025,24 +5782,30 @@ impl App {
             Some(GameMenu::Working { since, .. }) => since,
             _ => self.now(),
         };
-        self.start_link_from(
-            LinkStarter::spawn(reload.role.role(), link_port()),
-            reload.role.client_id(),
-            since,
-        );
+        self.begin_role(reload.role, reload.join, since);
     }
 
     pub fn link_reload_failed(&mut self) {
         let Some(mut reload) = self.reload.take() else {
+            if std::mem::take(&mut self.reloading_back) {
+                self.refuse_seated();
+            }
             return;
         };
         if !reload.fallback {
+            if reload.join.is_some() {
+                self.link_core = None;
+                self.link_kind_once = None;
+                self.link_player = None;
+            }
             self.link_reload = Some((reload.stem.clone(), reload.from_serial));
             reload.fallback = true;
             self.reload = Some(reload);
             return;
         }
-        self.link_choices.insert(reload.stem, reload.from);
+        if reload.join.is_none() {
+            self.link_choices.insert(reload.stem, reload.from);
+        }
         self.refuse_seated();
     }
 
@@ -5063,6 +5826,7 @@ impl App {
 
     pub fn poweroff(&mut self) {
         self.settle_saves();
+        self.drop_ble();
         if let Some(power) = &mut self.power {
             power.poweroff();
         }
@@ -5111,6 +5875,7 @@ impl App {
         let action = match self.kid_locked() {
             true => {
                 let at = match self.phase {
+                    _ if self.invite.is_some() => crate::kid::KidWhere::Invite,
                     Phase::Shelf => crate::kid::KidWhere::Shelf,
                     Phase::Playing { .. } => crate::kid::KidWhere::Playing,
                     _ => crate::kid::KidWhere::Other,
@@ -5123,6 +5888,9 @@ impl App {
             }
             false => action,
         };
+        if self.invite.is_some() {
+            return self.invite_input(action);
+        }
         let server_adjusts = matches!(
             action,
             Action::VolumeUp
@@ -5562,6 +6330,16 @@ impl App {
             QuickRow::WifiPower => self.set_wifi_off(!self.state.wifi_off),
             QuickRow::Networks => self.open_networks(),
             QuickRow::RommProtocol | QuickRow::RommSelfSigned => self.change_setting(row, true),
+            QuickRow::Nickname => {
+                let text = self.state.nickname.clone();
+                self.open_keyboard(
+                    "Nickname",
+                    None,
+                    KeyboardFor::Nickname,
+                    slot_ui::Layout::General,
+                    &text,
+                );
+            }
             QuickRow::RommServer => {
                 let text = self.romm.server.clone();
                 self.open_keyboard(
@@ -6044,6 +6822,7 @@ impl App {
             | QuickRow::RommStatus
             | QuickRow::RommPairedServer
             | QuickRow::RommDisconnect
+            | QuickRow::Nickname
             | QuickRow::Server => return,
             #[cfg(feature = "nds")]
             QuickRow::FetchBoxArt => return,
@@ -6352,6 +7131,9 @@ impl App {
         }
         self.timers();
         self.poll_link();
+        self.poll_ble();
+        self.poll_invites();
+        self.settle_switch();
         self.sync_bottom_backlight();
         let now = self.now();
         self.tick_move(now);
@@ -6446,6 +7228,9 @@ impl App {
             self.phase = phase;
             self.refused_from = None;
             if matches!(self.phase, Phase::Shelf) {
+                if let Some(seat) = self.invite_return.take() {
+                    self.sit(seat);
+                }
                 self.land_for_kid();
             }
             let seated = match &self.phase {
@@ -6456,6 +7241,11 @@ impl App {
                 self.link_loaded = None;
             }
             self.record_cart(seated);
+            if let Some(heard) = self.join_later.take() {
+                if self.seated().is_some() {
+                    self.join_host(heard);
+                }
+            }
         }
         self.step_screen(dt);
         self.step_footer(dt);
@@ -6693,6 +7483,9 @@ impl App {
         self.play_hold();
         self.repeat_held_dir();
         self.take_shot_list();
+        if self.radio_bye.is_some_and(|at| self.now() >= at) {
+            self.radio_down();
+        }
         if self.shot_writer.take_failures() > 0 {
             self.hud.toast(Toast::ShotFailed, self.now());
         }
@@ -7491,6 +8284,7 @@ impl App {
                     networks: self.quick_network_faces,
                     romm: self.quick_romm_faces,
                     kid_shelf: self.quick_kid_shelf_faces,
+                    nickname: self.quick_nickname_faces,
                     faces: self.quick_menu_faces.as_ref(),
                     ground: self.menu_ground(),
                     palette: self.quick_palette_faces,
@@ -7712,6 +8506,7 @@ impl App {
                 networks: None,
                 romm: [None; 4],
                 kid_shelf: None,
+                nickname: None,
                 faces: self.quick_menu_faces.as_ref(),
                 ground: None,
                 palette: self.quick_palette_faces,
@@ -7745,6 +8540,18 @@ impl App {
         }
         if let Some(menu) = self.game_menu {
             self.draw_game_menu(menu, out);
+        }
+        if let (Some(card), Some(faces)) = (&self.invite, self.invite_faces) {
+            let kind = card.heard.advert.kind;
+            let faces = InviteFaces {
+                art: self.link_sprites.map(|s| match kind {
+                    LinkKind::Cable => (s.plug_join, kind),
+                    LinkKind::Wireless => (s.adapter, kind),
+                }),
+                ..faces
+            };
+            let canvas = self.canvas();
+            crate::invite_card::draw_invite_card(out, &faces, (canvas.w as u32, canvas.h as u32));
         }
         self.hud.draw(self.canvas(), self.now(), out);
     }
@@ -9368,8 +10175,17 @@ impl App {
         self.link_step_faces = faces;
     }
 
-    pub fn set_link_fail_faces(&mut self, faces: Vec<(TexId, u32, u32)>) {
+    pub fn set_link_fail_faces(
+        &mut self,
+        faces: Vec<(TexId, u32, u32)>,
+        hints: Vec<Option<(TexId, u32, u32)>>,
+    ) {
         self.link_fail_faces = faces;
+        self.link_fail_hint_faces = hints;
+    }
+
+    pub fn set_link_fail_wireless_faces(&mut self, faces: Vec<Option<(TexId, u32, u32)>>) {
+        self.link_fail_wireless_faces = faces;
     }
 
     pub fn set_link_legend_faces(&mut self, faces: Vec<(TexId, u32)>) {
@@ -9621,9 +10437,13 @@ impl App {
                 .get(step.shown(self.radio.warmed()).index())
                 .copied(),
             GameMenu::Linked { .. } => self.link_linked_face,
-            GameMenu::Failed { fail, .. } => fail
-                .shown()
-                .and_then(|i| self.link_fail_faces.get(i).copied()),
+            GameMenu::Failed { fail, .. } => fail.shown().and_then(|i| {
+                let wireless = match self.link_hardware {
+                    LinkKind::Wireless => self.link_fail_wireless_faces.get(i).copied().flatten(),
+                    LinkKind::Cable => None,
+                };
+                wireless.or_else(|| self.link_fail_faces.get(i).copied())
+            }),
             GameMenu::Unplug { .. } => None,
         };
         if let Some((tex, w, h)) = line {
@@ -9635,6 +10455,22 @@ impl App {
                 tex,
                 alpha: 1.0,
             });
+            let hint = match menu {
+                GameMenu::Failed { fail, .. } => fail
+                    .shown()
+                    .and_then(|i| self.link_fail_hint_faces.get(i).copied().flatten()),
+                _ => None,
+            };
+            if let Some((hint_tex, hw, hh)) = hint {
+                out.push(Draw::Tex {
+                    x: canvas.centred(hw as f32).round(),
+                    y: LINK_TEXT_Y + h as f32 + REPAIR_GAP as f32,
+                    w: hw as f32,
+                    h: hh as f32,
+                    tex: hint_tex,
+                    alpha: 1.0,
+                });
+            }
         }
         let switchable = self.seated().is_some_and(|stem| self.link_switchable(stem));
         let (left, right): (&[LinkLegend], &[LinkLegend]) = match menu {
@@ -9895,6 +10731,7 @@ impl App {
         if self.link_active() {
             self.end_link();
         }
+        self.radio_down();
         if !self.updating() {
             self.update = None;
         }
@@ -10052,7 +10889,9 @@ impl App {
                 return;
             }
             self.link_hardware = LinkKind::Cable;
+            self.radio_down();
             self.radio.ask(RadioJob::Warm);
+            self.learn_game();
             self.game_menu = Some(GameMenu::Pick(self.last_role));
             return;
         }
@@ -10076,7 +10915,9 @@ impl App {
             .seated()
             .map_or(LinkKind::Cable, |stem| self.link_mode(stem).0);
         self.link_hardware = hardware;
+        self.radio_down();
         self.radio.ask(RadioJob::Warm);
+        self.learn_game();
         self.game_menu = Some(GameMenu::Pick(self.last_role));
     }
 
@@ -12782,6 +13623,11 @@ impl App {
                 self.keyboard = None;
                 self.save_romm();
             }
+            KeyboardFor::Nickname => {
+                self.state.nickname = crate::invite::cut_name(text.trim()).to_string();
+                self.keyboard = None;
+                self.persist();
+            }
             KeyboardFor::RommPort => {
                 let port = match text.trim() {
                     "" => None,
@@ -13706,6 +14552,9 @@ impl App {
             },
             GameMenu::Working { .. } => {
                 if action == Action::GbaDown(Btn::B) {
+                    if self.join_wait.is_some() {
+                        return self.close_game_menu();
+                    }
                     if let Some(starting) = &mut self.starting {
                         starting.starter.cancel();
                     }
@@ -13740,6 +14589,7 @@ impl App {
         if self.art_busy() {
             return self.refuse();
         }
+        self.radio_down();
         self.stop_romm();
         self.release_radio();
         if let Some(mut old) = self.starting.replace(LinkStarting { starter, client_id }) {
@@ -13772,20 +14622,29 @@ impl App {
     }
 
     fn pick_link(&mut self, role: LinkRow) {
+        self.pick_link_for(role, None);
+    }
+
+    fn pick_link_for(&mut self, role: LinkRow, join: Option<HostAp>) {
         let Some(stem) = self.seated().map(str::to_string) else {
             return;
         };
+        if role == LinkRow::Host {
+            eprintln!(
+                "slot: invite: host pressed at {:.0} ms",
+                crate::boot_time::ms()
+            );
+        }
+        let since = self.working_role(role.client_id()).1;
         let loaded = self.link_loaded.unwrap_or("auto");
-        if self.core == Core::Mgba {
+        let switching = self.link_core.is_some_and(|c| c != self.core);
+        if self.link_core.unwrap_or(self.core) == Core::Mgba {
             let player = role.client_id() as u8;
-            if self.link_player == Some(player) {
-                return self.start_link(
-                    LinkStarter::spawn(role.role(), link_port()),
-                    role.client_id(),
-                );
+            if self.link_player == Some(player) && !switching {
+                return self.begin_role(role, join, since);
             }
             if self.snapshot.as_ref().is_some_and(|s| !s.resume_trusted()) {
-                return self.refuse();
+                return self.refuse_join(join);
             }
             self.link_player = Some(player);
             self.link_reload = Some((stem.clone(), loaded));
@@ -13796,23 +14655,24 @@ impl App {
                 from: self.link_hardware,
                 from_serial: loaded,
                 fallback: false,
+                join,
             });
             self.game_menu = Some(GameMenu::Working {
                 role,
                 step: LinkStep::Radio,
-                since: self.now(),
+                since,
             });
             return;
         }
         let (_, serial) = self.link_mode(&stem);
-        if serial == loaded {
-            return self.start_link(
-                LinkStarter::spawn(role.role(), link_port()),
-                role.client_id(),
-            );
+        if serial == loaded && !switching {
+            return self.begin_role(role, join, since);
         }
         if self.snapshot.as_ref().is_some_and(|s| !s.resume_trusted()) {
-            return self.refuse();
+            return self.refuse_join(join);
+        }
+        if switching {
+            self.link_player = None;
         }
         self.link_reload = Some((stem.clone(), serial));
         self.reload = Some(Reload {
@@ -13822,12 +14682,27 @@ impl App {
             from: self.link_hardware.other(),
             from_serial: loaded,
             fallback: false,
+            join,
         });
         self.game_menu = Some(GameMenu::Working {
             role,
             step: LinkStep::Radio,
-            since: self.now(),
+            since,
         });
+    }
+
+    fn begin_role(&mut self, role: LinkRow, join: Option<HostAp>, since: Millis) {
+        match join {
+            Some(ap) => self.start_join(ap, since),
+            None => self.start_role(role, since),
+        }
+    }
+
+    fn refuse_join(&mut self, join: Option<HostAp>) {
+        if join.is_some() {
+            self.close_game_menu();
+        }
+        self.refuse();
     }
 
     fn refuse_seated(&mut self) {
@@ -13849,6 +14724,7 @@ impl App {
 
     fn close_game_menu(&mut self) {
         self.game_menu = None;
+        self.ble_off();
         if let Some(mut starting) = self.starting.take() {
             starting.starter.cancel();
         }
@@ -13884,7 +14760,25 @@ impl App {
                 }
                 self.starting = Some(starting);
             }
+            Some(LinkProgress::Hosting(ap)) => {
+                eprintln!(
+                    "slot: invite: host hotspot up at {:.0} ms",
+                    crate::boot_time::ms()
+                );
+                self.learn_game();
+                self.session = Some(crate::invite::new_session());
+                self.hosted = Some(ap);
+                self.advertise();
+                if self.hosted.is_some() {
+                    eprintln!(
+                        "slot: invite: host advert waits for the ROM CRC at {:.0} ms",
+                        crate::boot_time::ms()
+                    );
+                }
+                self.starting = Some(starting);
+            }
             Some(LinkProgress::Ready(link)) => {
+                self.ble_off();
                 let (role, worked) = self.working_role(starting.client_id);
                 self.game_menu = Some(GameMenu::Linked {
                     role,
@@ -13895,8 +14789,12 @@ impl App {
                 self.begin_link(starting.client_id);
                 self.link_transport = Some((starting.client_id, Box::new(link)));
             }
-            Some(LinkProgress::Failed(LinkFail::Cancelled)) => self.game_menu = None,
+            Some(LinkProgress::Failed(LinkFail::Cancelled)) => {
+                self.ble_off();
+                self.game_menu = None;
+            }
             Some(LinkProgress::Failed(fail)) => {
+                self.ble_off();
                 let (role, worked) = self.working_role(starting.client_id);
                 self.game_menu = Some(GameMenu::Failed {
                     role,
@@ -13930,6 +14828,7 @@ impl App {
         if self.link_active() {
             self.end_link();
         }
+        self.radio_down();
         self.close_game_menu();
         self.save_guide_spot();
         self.remember_shelf();
@@ -14966,4 +15865,10 @@ fn ds_eject_bottom(u: f32) -> Option<[f32; 3]> {
             ],
         )
     })
+}
+
+fn bios_of(bios: &[(Core, u32)], core: Core) -> u32 {
+    bios.iter()
+        .find(|(c, _)| *c == core)
+        .map_or(0, |(_, crc)| *crc)
 }

@@ -721,6 +721,31 @@ pub fn connect(a: &mut App) {
     assert!(a.wifi_up(), "the fake network did not connect");
 }
 
+pub fn heard_host(
+    d: &TempDir,
+    stem: &str,
+    session: u16,
+    ap: slot::link_radio::HostAp,
+    rssi: i8,
+) -> slot::ble::Heard {
+    let game_crc = slot::art::rom::rom_crc(&rom_path(d, stem)).expect("hash the test rom");
+    slot::ble::Heard {
+        advert: slot::invite::Advert {
+            session,
+            game_crc,
+            core: slot_store::Core::Gpsp,
+            bios_crc: 0,
+            kind: slot::link_kind::LinkKind::Cable,
+            freq_mhz: ap.freq_mhz,
+            bssid: ap.bssid,
+            platform: slot_store::Platform::Gba,
+        },
+        nickname: Some("Dad".to_string()),
+        rssi,
+        at: slot::ble::clock(),
+    }
+}
+
 pub fn reach<T>(
     t: &mut T,
     row: slot_ui::QuickRow,

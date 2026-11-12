@@ -13,13 +13,13 @@ use slot_ui::{
     chip_shadow_face, core_button_legends, date_time_text, default_game_bezel_face, delete_legends,
     footer_ink, game_bezel_face, gb_cart_shadow, hint_face, icon_face, link_button_legends,
     menu_detail_face, menu_face, padded, photo_face, prompt_legends, quick_description_face,
-    quick_label_face, quick_legend_faces, quick_pointer_face, quick_value_face,
-    quick_warning_value_face, rebuild_count_face, rebuild_title_face, repair_legends, slot_back,
-    slot_back_light, slot_front, slot_front_light, socket_face, socket_face_text, sticker_face,
-    time_text, title_face, toast_face, update_cart_face, update_legends, wallpaper_face, word_ink,
-    BezelArt, CartFace, GbShell, Icon, LinkBadge, PowerChoice, QuickMenuFaces, QuickRow,
-    QuickValue, RebuildScreen, StickerFields, Toast, UndoFace, ALERT_PX, BOLT_PX, HUD_ICON_PX,
-    HUD_INK, LEGEND, TURN_PAD,
+    quick_label_face, quick_legend_faces, quick_placeholder_face, quick_pointer_face,
+    quick_value_face, quick_warning_value_face, rebuild_count_face, rebuild_title_face,
+    repair_legends, slot_back, slot_back_light, slot_front, slot_front_light, socket_face,
+    socket_face_text, sticker_face, time_text, title_face, toast_face, update_cart_face,
+    update_legends, wallpaper_face, word_ink, BezelArt, CartFace, GbShell, Icon, LinkBadge,
+    PowerChoice, QuickMenuFaces, QuickRow, QuickValue, RebuildScreen, StickerFields, Toast,
+    UndoFace, ALERT_PX, BOLT_PX, HUD_ICON_PX, HUD_INK, LEGEND, TURN_PAD,
 };
 
 use crate::app::{App, LinkRow, Phase, UpdateCart, UpdateScene};
@@ -29,6 +29,7 @@ use crate::cart_faces::CartFaces;
 use crate::face_builder::FaceBuilder;
 use crate::label_cache::{self, Rebuild};
 use crate::link_art_builder::LinkArtBuilder;
+use crate::link_kind::LinkKind;
 use crate::link_screen::{LinkSprites, Sprite};
 use crate::link_start::{LinkFail, LinkStep};
 use crate::session::Session;
@@ -75,6 +76,8 @@ pub struct Frontend {
     quick_network: QuickClock,
     quick_romm: [QuickClock; 4],
     quick_kid_shelf: QuickClock,
+    quick_nickname: QuickClock,
+    invite: InviteSync,
     networks: crate::network_faces::NetworkSync,
     quick_palette: QuickPalette,
     wallpaper: WallpaperSync,
@@ -100,6 +103,14 @@ struct QuickClock {
     dim: Option<TexId>,
     lit: Option<TexId>,
     shown: String,
+}
+
+#[derive(Default)]
+struct InviteSync {
+    statics: Option<[Sprite; 3]>,
+    one: Option<TexId>,
+    two: Option<TexId>,
+    shown: Option<(String, String)>,
 }
 
 #[derive(Default)]
@@ -635,6 +646,8 @@ impl Frontend {
             quick_network: QuickClock::default(),
             quick_romm: Default::default(),
             quick_kid_shelf: Default::default(),
+            quick_nickname: Default::default(),
+            invite: Default::default(),
             networks: Default::default(),
             quick_palette: QuickPalette::default(),
             wallpaper: WallpaperSync::default(),
@@ -1028,6 +1041,16 @@ impl Frontend {
         let core_legend_light = pack(faces.core_legend_light);
         let steps = faces.link_steps.into_iter().map(&mut up).collect();
         let fails = faces.link_fails.into_iter().map(&mut up).collect();
+        let fails_wireless = faces
+            .link_fails_wireless
+            .into_iter()
+            .map(|f| f.map(&mut up))
+            .collect();
+        let fail_hints = faces
+            .link_fail_hints
+            .into_iter()
+            .map(|f| f.map(&mut up))
+            .collect();
         if let Some(look) = &mut self.look {
             look.legend = [link_legend.clone(), link_legend_light];
             look.applied = None;
@@ -1058,7 +1081,8 @@ impl Frontend {
         app.set_link_linked_face(linked);
         app.set_link_legend_faces(link_legend);
         app.set_link_step_faces(steps);
-        app.set_link_fail_faces(fails);
+        app.set_link_fail_faces(fails, fail_hints);
+        app.set_link_fail_wireless_faces(fails_wireless);
         app.set_toast_faces(toasts);
     }
 
@@ -1249,6 +1273,8 @@ impl Frontend {
             compositor,
             &mut self.quick_kid_shelf,
         );
+        sync_quick_nickname(self.session.app_mut(), compositor, &mut self.quick_nickname);
+        sync_invite(self.session.app_mut(), compositor, &mut self.invite);
         self.networks.sync(self.session.app_mut(), compositor);
         sync_quick_palette(self.session.app_mut(), compositor, &mut self.quick_palette);
         sync_wallpaper(self.session.app_mut(), compositor, &mut self.wallpaper);
@@ -1602,6 +1628,8 @@ struct UiFaces {
     link_legend_light: Vec<UndoFace>,
     link_steps: Vec<UndoFace>,
     link_fails: Vec<UndoFace>,
+    link_fails_wireless: Vec<Option<UndoFace>>,
+    link_fail_hints: Vec<Option<UndoFace>>,
     toasts: Vec<CartFace>,
     repair: Vec<UndoFace>,
     reset: Vec<UndoFace>,
@@ -1677,7 +1705,18 @@ impl UiFaces {
             link_steps: LinkStep::ALL.iter().map(|s| menu_face(s.line())).collect(),
             link_fails: LinkFail::SHOWN
                 .iter()
-                .map(|f| menu_face(f.line()))
+                .map(|f| menu_face(f.line(LinkKind::Cable)))
+                .collect(),
+            link_fails_wireless: LinkFail::SHOWN
+                .iter()
+                .map(|f| {
+                    let line = f.line(LinkKind::Wireless);
+                    (line != f.line(LinkKind::Cable)).then(|| menu_face(line))
+                })
+                .collect(),
+            link_fail_hints: LinkFail::SHOWN
+                .iter()
+                .map(|f| f.hint().map(menu_detail_face))
                 .collect(),
             toasts: Toast::all().into_iter().map(toast_face).collect(),
             update_legends: update_legends(footer_ink(false)),
@@ -2472,6 +2511,81 @@ fn sync_quick_kid_shelf(app: &mut App, compositor: &mut Compositor, state: &mut 
     let lit = upload(compositor, &mut state.lit, lit);
     app.set_quick_kid_shelf_faces((dim, dim_size.0, dim_size.1), (lit, lit_size.0, lit_size.1));
     state.shown = text;
+}
+
+fn sync_quick_nickname(app: &mut App, compositor: &mut Compositor, state: &mut QuickClock) {
+    if app.quick_menu().is_none() {
+        return;
+    }
+    let set = app.nickname_set();
+    let text = app.nickname();
+    let key = format!("{}{text}", if set { "+" } else { "-" });
+    if key == state.shown {
+        return;
+    }
+    let face = if set {
+        quick_value_face
+    } else {
+        quick_placeholder_face
+    };
+    let (dim, lit) = (face(&text, false), face(&text, true));
+    let (dim_size, lit_size) = ((dim.w, dim.h), (lit.w, lit.h));
+    let dim = upload(compositor, &mut state.dim, dim);
+    let lit = upload(compositor, &mut state.lit, lit);
+    app.set_quick_nickname_faces((dim, dim_size.0, dim_size.1), (lit, lit_size.0, lit_size.1));
+    state.shown = key;
+}
+
+fn sync_invite(app: &mut App, compositor: &mut Compositor, state: &mut InviteSync) {
+    let Some(card) = app.invite_card() else {
+        return;
+    };
+    let key = (card.nickname().to_string(), card.title.clone());
+    if state.shown.as_ref() == Some(&key) {
+        return;
+    }
+    let mut sprite = |f: slot_ui::UndoFace| Sprite {
+        tex: compositor.create_texture(f.w, f.h, &f.rgba),
+        w: f.w,
+        h: f.h,
+    };
+    let [card_sprite, not_now, join] = match state.statics {
+        Some(statics) => statics,
+        None => {
+            let [no, yes] = crate::invite_card::legend_faces();
+            let statics = [
+                sprite(crate::invite_card::card_face()),
+                sprite(no),
+                sprite(yes),
+            ];
+            state.statics = Some(statics);
+            statics
+        }
+    };
+    let (one, two) = (
+        crate::invite_card::line_one_face(&key.0),
+        crate::invite_card::line_two_face(&key.1),
+    );
+    let (one_size, two_size) = ((one.w, one.h), (two.w, two.h));
+    let one = upload(compositor, &mut state.one, one);
+    let two = upload(compositor, &mut state.two, two);
+    app.set_invite_faces(crate::invite_card::InviteFaces {
+        card: card_sprite,
+        line_one: Sprite {
+            tex: one,
+            w: one_size.0,
+            h: one_size.1,
+        },
+        line_two: Sprite {
+            tex: two,
+            w: two_size.0,
+            h: two_size.1,
+        },
+        not_now,
+        join,
+        art: None,
+    });
+    state.shown = Some(key);
 }
 
 fn sync_quick_romm(app: &mut App, compositor: &mut Compositor, state: &mut [QuickClock; 4]) {
