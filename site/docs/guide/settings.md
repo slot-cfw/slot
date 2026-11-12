@@ -39,6 +39,8 @@ To disable kid mode, hold <kbd>START + SELECT + L2 + R2</kbd> while turning the 
 is off until the next restart, so you can change settings or turn it off for good. Restart without the buttons and it
 locks again.
 
+A slot device in Kid Mode can still link up with other slot devices, see [Linking with Kid Mode](linking.md#linking-with-kid-mode).
+
 ## Gameplay
 
 | Setting | Choices | Default | Does |
@@ -98,6 +100,7 @@ All three need Wi-Fi.
 | --- | --- | --- | --- |
 | Wi-Fi | | | Turns Wi-Fi on or off and picks a network |
 | Date & Time | | | Sets the clock, your city and 12 or 24-hour time |
+| Nickname | Up to 29 letters | The device's name | The name other players see when you host a link |
 | Lid Power Off | 1, 3, 5, 10, 15, 30 min | 3 min | How long slot sleeps before powering off |
 | Battery Display | Both, Icon, Percentage | Both | Whether the battery shows as an icon, a percentage or both |
 | Check for Updates | | | Downloads and installs a new version of slot |
