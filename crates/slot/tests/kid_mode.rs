@@ -64,6 +64,13 @@ fn open_at(a: &mut App, row: QuickRow) {
     assert_eq!(a.quick_menu(), Some(row), "the bar never reached {row:?}");
 }
 
+fn close_menu(a: &mut App) {
+    while a.quick_menu().is_some() {
+        press(a, Btn::B);
+    }
+    a.update(1.0);
+}
+
 fn saved(d: &TempDir) -> SlotState {
     read_slot_state(d.path())
 }
@@ -80,16 +87,33 @@ fn turning_kid_mode_on_asks_first() {
 }
 
 #[test]
-fn confirming_locks_and_lands_on_the_shelf() {
+fn confirming_stays_in_the_menu() {
     let d = card();
     let (mut a, _clock) = boot_on(&d, SlotState::default());
     open_at(&mut a, QuickRow::KidMode);
     press(&mut a, Btn::Right);
     press(&mut a, Btn::A);
-    assert!(a.kid_locked());
     assert_eq!(a.kid_prompt(), None);
-    assert!(matches!(a.phase(), Phase::Shelf), "{:?}", a.phase());
+    assert_eq!(a.quick_menu(), Some(QuickRow::KidMode));
+    assert!(!a.kid_locked());
     assert_eq!(saved(&d).kid_mode, KidMode::OneShelf);
+    assert!(!a.hidden_rows().contains(&QuickRow::KidShelf));
+    press(&mut a, Btn::Down);
+    assert_eq!(a.quick_menu(), Some(QuickRow::KidShelf));
+}
+
+#[test]
+fn closing_the_menu_after_confirming_locks_on_the_shelf() {
+    let d = card();
+    let (mut a, _clock) = boot_on(&d, SlotState::default());
+    open_at(&mut a, QuickRow::KidMode);
+    press(&mut a, Btn::Right);
+    press(&mut a, Btn::A);
+    close_menu(&mut a);
+    assert!(matches!(a.phase(), Phase::Shelf), "{:?}", a.phase());
+    assert!(a.kid_locked());
+    a.apply(Action::QuickMenu);
+    assert_eq!(a.quick_menu(), None);
 }
 
 #[test]
@@ -496,6 +520,7 @@ fn confirming_one_shelf_lands_on_the_kid_shelf() {
     open_at(&mut a, QuickRow::KidMode);
     press(&mut a, Btn::Right);
     press(&mut a, Btn::A);
+    close_menu(&mut a);
     assert_eq!(a.shelf_key(), "all");
 }
 

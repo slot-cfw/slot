@@ -671,6 +671,7 @@ pub struct App {
     kid_prompt: Option<KidMode>,
     kid_unlocked: bool,
     kid_toast_due: bool,
+    kid_lock_on_close: bool,
     seated_platform: Option<Platform>,
     kid_icon_faces: Option<[(TexId, u32, u32); 2]>,
     pub romm: crate::romm::RommConf,
@@ -1169,6 +1170,7 @@ impl App {
             kid_prompt: None,
             kid_unlocked: false,
             kid_toast_due: false,
+            kid_lock_on_close: false,
             seated_platform: None,
             kid_icon_faces: None,
             romm: crate::romm::RommConf::default(),
@@ -2980,6 +2982,7 @@ impl App {
             return;
         }
         self.kid_unlocked = true;
+        self.kid_lock_on_close = false;
         self.kid_toast_due = true;
         let seated = match &self.phase {
             Phase::Inserting { cart, .. }
@@ -3096,9 +3099,17 @@ impl App {
     fn confirm_kid_mode(&mut self, mode: KidMode) {
         self.kid_prompt = None;
         self.state.kid_mode = mode;
-        self.kid_unlocked = false;
+        self.kid_unlocked = true;
+        self.kid_lock_on_close = true;
         self.persist();
-        self.phase = Phase::Shelf;
+    }
+
+    fn lock_kid_on_close(&mut self) {
+        if !self.kid_lock_on_close || !matches!(self.phase, Phase::Shelf | Phase::Playing { .. }) {
+            return;
+        }
+        self.kid_lock_on_close = false;
+        self.kid_unlocked = false;
         self.land_for_kid();
     }
 
@@ -5096,6 +5107,7 @@ impl App {
             }
             return;
         }
+        self.lock_kid_on_close();
         let action = match self.kid_locked() {
             true => {
                 let at = match self.phase {
@@ -6332,6 +6344,7 @@ impl App {
         if std::mem::take(&mut self.kid_toast_due) {
             self.hud.toast(Toast::KidUnlocked, self.now());
         }
+        self.lock_kid_on_close();
         self.take_eject_write(false);
         if self.name_pending && self.shelf_platform.face.is_some() {
             self.name_pending = false;
