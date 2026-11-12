@@ -118,7 +118,7 @@ impl Toast {
     pub fn hold_ms(self) -> crate::hud::Millis {
         match self {
             Toast::CardRepaired | Toast::CardRepairFailed => REPAIR_HOLD_MS,
-            Toast::Duplicate(_) => WARNING_HOLD_MS,
+            Toast::Duplicate(_) | Toast::KidUnlocked => WARNING_HOLD_MS,
             Toast::TintOff | Toast::TintLow | Toast::TintMedium | Toast::TintHigh => TINT_HOLD_MS,
             _ => crate::hud::HUD_MS,
         }

@@ -531,6 +531,7 @@ fn unlocking_opens_settings_until_restart() {
     let d = card();
     let (mut a, _clock) = boot_on(&d, kid(KidMode::Shelves));
     a.unlock_kid_mode();
+    a.update(0.0);
     assert_eq!(a.toast(), Some(slot_ui::Toast::KidUnlocked));
     assert!(!a.kid_locked());
     a.apply(Action::QuickMenu);
@@ -542,10 +543,22 @@ fn unlocking_opens_settings_until_restart() {
 }
 
 #[test]
+fn the_unlock_toast_outlasts_the_boot_gap() {
+    let d = card();
+    let (mut a, _clock) = boot_on(&d, kid(KidMode::Shelves));
+    a.unlock_kid_mode();
+    a.update(2.0);
+    assert_eq!(a.toast(), Some(slot_ui::Toast::KidUnlocked));
+    a.update(3.5);
+    assert_eq!(a.toast(), Some(slot_ui::Toast::KidUnlocked));
+}
+
+#[test]
 fn unlocking_does_nothing_when_kid_mode_is_off() {
     let d = card();
     let (mut a, _clock) = boot_on(&d, SlotState::default());
     a.unlock_kid_mode();
+    a.update(0.0);
     assert_eq!(a.toast(), None);
 }
 

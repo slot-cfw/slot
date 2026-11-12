@@ -670,6 +670,7 @@ pub struct App {
     kid_faces: Vec<(TexId, u32, u32)>,
     kid_prompt: Option<KidMode>,
     kid_unlocked: bool,
+    kid_toast_due: bool,
     seated_platform: Option<Platform>,
     kid_icon_faces: Option<[(TexId, u32, u32); 2]>,
     pub romm: crate::romm::RommConf,
@@ -1167,6 +1168,7 @@ impl App {
             kid_faces: Vec::new(),
             kid_prompt: None,
             kid_unlocked: false,
+            kid_toast_due: false,
             seated_platform: None,
             kid_icon_faces: None,
             romm: crate::romm::RommConf::default(),
@@ -2978,7 +2980,7 @@ impl App {
             return;
         }
         self.kid_unlocked = true;
-        self.hud.toast(Toast::KidUnlocked, self.now());
+        self.kid_toast_due = true;
         let seated = match &self.phase {
             Phase::Inserting { cart, .. }
             | Phase::Playing { cart }
@@ -6327,6 +6329,9 @@ impl App {
 
     pub fn update(&mut self, dt: f32) {
         self.clock += dt as f64 * 1000.0;
+        if std::mem::take(&mut self.kid_toast_due) {
+            self.hud.toast(Toast::KidUnlocked, self.now());
+        }
         self.take_eject_write(false);
         if self.name_pending && self.shelf_platform.face.is_some() {
             self.name_pending = false;
