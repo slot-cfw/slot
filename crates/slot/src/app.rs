@@ -11545,6 +11545,7 @@ impl App {
             cart,
             ground: studio.preview_ground(),
             text: studio.wearing_text(),
+            marker: studio.writing() || studio.sheet.contains(&crate::studio::LabelKind::Hand),
             real: art.and_then(|a| a.real.clone()),
             logo: art.and_then(|a| a.logo.clone()),
             wheel: art.and_then(|a| a.wheel.clone()),
@@ -11554,6 +11555,15 @@ impl App {
     }
 
     pub fn set_studio_tex(&mut self, tex: StudioTex) {
+        let worn = tex
+            .faces
+            .iter()
+            .any(|(k, _)| *k == crate::studio::LabelKind::Existing);
+        if let Some(studio) = self.studio.as_mut().filter(|s| s.cart.label.is_some()) {
+            if !worn {
+                studio.label_unreadable();
+            }
+        }
         self.studio_tex = Some(tex);
     }
 
@@ -11938,7 +11948,7 @@ impl App {
             return;
         };
         let [x, y, w, h] = self.studio_cart_rect();
-        let well = well_of(&studio.cart);
+        let well = well_of(&studio.shaped());
         let (sx, sy) = (w / tex.w as f32, h / tex.h as f32);
         let rect = [
             x + well[0] as f32 * sx,
@@ -11993,7 +12003,7 @@ impl App {
             return;
         };
         let [x, y, w, h] = self.studio_cart_rect();
-        let well = well_of(&studio.cart);
+        let well = well_of(&studio.shaped());
         let (sx, sy) = (w / tex.w as f32, h / tex.h as f32);
         let rect = [
             x + well[0] as f32 * sx,
@@ -12139,7 +12149,7 @@ impl App {
         let Some(face) = self.studio_face(kind) else {
             return;
         };
-        let well = well_of(&studio.cart);
+        let well = well_of(&studio.shaped());
         let (fw, fh) = (tex.w as f32, tex.h as f32);
         out.push(Draw::Part {
             x: x + SLIP_PAD * zoom,
@@ -12170,7 +12180,7 @@ impl App {
         let Some(studio) = &self.studio else {
             return ([0.0; 4], [0.0; 2], 0.0);
         };
-        let well = crate::studio_view::well_of(&studio.cart);
+        let well = crate::studio_view::well_of(&studio.shaped());
         let (sx, sy) = (rect[2] / tex.w as f32, rect[3] / tex.h as f32);
         let label = [
             rect[0] + well[0] as f32 * sx,

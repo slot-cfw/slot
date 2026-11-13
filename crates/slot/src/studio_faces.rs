@@ -20,6 +20,7 @@ pub struct PreviewJob {
     pub cart: Cart,
     pub ground: Option<[u8; 3]>,
     pub text: bool,
+    pub marker: bool,
     pub real: Option<PathBuf>,
     pub logo: Option<PathBuf>,
     pub wheel: Option<PathBuf>,
@@ -83,9 +84,13 @@ pub fn build(job: PreviewJob, cache: &mut Cache) -> StudioFaces {
         .ground
         .filter(|_| job.text)
         .map(|c| slot_ui::text_label(&job.cart, c));
-    let mut faces = vec![(LabelKind::Hand, cart_face_with(&job.cart, tinted))];
+    let mut faces = vec![(LabelKind::Hand, cart_face_with(&job.cart, None))];
+    let worn = tinted.is_none().then_some(&job.existing);
+    if let Some(text) = tinted {
+        faces.push((LabelKind::Existing, cart_face_with(&job.cart, Some(text))));
+    }
     for (kind, path) in [
-        (LabelKind::Existing, &job.existing),
+        (LabelKind::Existing, worn.unwrap_or(&None)),
         (LabelKind::Real, &job.real),
     ] {
         let Some(path) = path else { continue };
@@ -104,9 +109,7 @@ pub fn build(job: PreviewJob, cache: &mut Cache) -> StudioFaces {
         }
     }
     let hand = job
-        .ground
-        .filter(|_| job.text)
-        .is_none()
+        .marker
         .then(|| slot_ui::hand_reveal(&job.cart, HAND_FRAMES))
         .flatten()
         .map(Box::new);

@@ -763,6 +763,137 @@ mod apply {
         panic!("the marker never loaded");
     }
 
+    fn ink_corners(shell: &str, reshape: bool) -> Option<[[f32; 2]; 4]> {
+        let surface = HeadlessSurface::new().ok()?;
+        let mut c = Compositor::new(&surface).ok()?;
+        let d = tmp_root_with_gb_carts(&["Kirby", "Tetris"]);
+        clocked(d.path());
+        std::fs::create_dir_all(d.path().join("Labels/GB")).unwrap();
+        label(&d.path().join("Labels/GB/Kirby.png"), [40, 60, 200]);
+        std::fs::write(
+            d.path().join("Labels/cart_shell.txt"),
+            format!("Kirby = {shell} 808080 solid\n"),
+        )
+        .unwrap();
+        let mut f = Frontend::boot(Box::new(SimPlatform::at(d.path().to_path_buf())));
+        f.app_mut().apply(Action::SelectTap);
+        if reshape {
+            to_row(&mut f, Row::Shape);
+            press(&mut f, Btn::Right);
+            to_row(&mut f, Row::Label);
+        }
+        press(&mut f, Btn::A);
+        for _ in 0..2000 {
+            let now = f.app().now();
+            f.app_mut().tick_ms(now + 5);
+            f.compose(&mut c);
+            if f.app().studio_tex().is_some_and(|t| t.hand.is_some()) && now > 1500 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        press(&mut f, Btn::A);
+        assert!(
+            f.app().studio().unwrap().writing(),
+            "the marker never wrote"
+        );
+        let start = f.app().now();
+        f.app_mut().tick_ms(start + 1500);
+        let atlas = f.app().studio_tex().unwrap().hand.as_ref().unwrap().atlas;
+        let mut out = Vec::new();
+        f.app().draw(&mut out);
+        out.iter().find_map(|d| match d {
+            slot_gfx::Draw::Quad { corners, tex, .. } if *tex == atlas => Some(*corners),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_ink_lands_in_the_well_of_a_shape_changed_in_the_studio() {
+        let Some(want) = ink_corners("rounded", false) else {
+            return;
+        };
+        let got = ink_corners("notched", true).expect("no ink drawn");
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!(
+                (g[0] - w[0]).abs() < 0.5 && (g[1] - w[1]).abs() < 0.5,
+                "ink at {got:?}, the rounded well is at {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_label_that_will_not_decode_counts_as_handwriting() {
+        let Some(surface) = HeadlessSurface::new().ok() else {
+            return;
+        };
+        let Ok(mut c) = Compositor::new(&surface) else {
+            return;
+        };
+        let d = tmp_root_with_gb_carts(&["Kirby", "Tetris"]);
+        clocked(d.path());
+        std::fs::create_dir_all(d.path().join("Labels/GB")).unwrap();
+        std::fs::write(d.path().join("Labels/GB/Kirby.png"), b"not a png").unwrap();
+        let mut f = Frontend::boot(Box::new(SimPlatform::at(d.path().to_path_buf())));
+        f.app_mut().apply(Action::SelectTap);
+        for _ in 0..400 {
+            let now = f.app().now();
+            f.app_mut().tick_ms(now + 5);
+            f.compose(&mut c);
+            if f.app().studio_tex().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let studio = f.app().studio().unwrap();
+        assert!(
+            studio.wearing_hand(),
+            "the unreadable label is not handwriting"
+        );
+        assert!(!studio.sheet.contains(&LabelKind::Hand));
+    }
+
+    #[test]
+    fn the_marker_slides_away_after_writing() {
+        let Some(surface) = HeadlessSurface::new().ok() else {
+            return;
+        };
+        let Ok(mut c) = Compositor::new(&surface) else {
+            return;
+        };
+        let d = tmp_root_with_gb_carts(&["Kirby", "Tetris"]);
+        clocked(d.path());
+        std::fs::create_dir_all(d.path().join("Labels/GB")).unwrap();
+        label(&d.path().join("Labels/GB/Kirby.png"), [40, 60, 200]);
+        let mut f = Frontend::boot(Box::new(SimPlatform::at(d.path().to_path_buf())));
+        let start = open_with_marker(&mut f, &mut c);
+        f.app_mut().tick_ms(start + 2000);
+        press(&mut f, Btn::A);
+        assert!(f.app().studio().unwrap().writing());
+        let wrote = f.app().now();
+        let done = wrote + (slot::studio::WRITE_MS + slot::studio::PEEL_MS) as u64;
+        f.app_mut().tick_ms(done + 10);
+        assert!(!f.app().studio().unwrap().writing());
+        for _ in 0..200 {
+            f.compose(&mut c);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        f.app_mut().tick_ms(done + 200);
+        let body = f
+            .app()
+            .studio_tex()
+            .and_then(|t| t.hand.as_ref())
+            .map(|h| h.body)
+            .expect("the marker art went with the writing");
+        let mut out = Vec::new();
+        f.app().draw(&mut out);
+        assert!(
+            out.iter()
+                .any(|d| matches!(d, slot_gfx::Draw::Quad { tex, .. } if *tex == body)),
+            "the marker vanished instead of sliding away"
+        );
+    }
+
     #[test]
     fn the_marker_slides_out_capped_then_uncaps() {
         let Some(surface) = HeadlessSurface::new().ok() else {
@@ -822,6 +953,15 @@ mod apply {
             );
         }
         f.app_mut().tick_ms(start + apply + 5);
+        for _ in 0..400 {
+            let now = f.app().now();
+            f.app_mut().tick_ms(now + 5);
+            f.compose(&mut c);
+            if f.app().studio_tex().is_some_and(|t| t.hand.is_some()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
         settle(&mut f);
         let img = snap(&mut f, &mut c, "backing-gone");
         assert!(
@@ -841,7 +981,22 @@ mod apply {
         let d = tmp_root_with_gb_carts(&["Kirby", "Tetris"]);
         clocked(d.path());
         let mut f = Frontend::boot(Box::new(SimPlatform::at(d.path().to_path_buf())));
-        let start = open_with_marker(&mut f, &mut c);
+        f.app_mut().apply(Action::SelectTap);
+        for _ in 0..400 {
+            let now = f.app().now();
+            f.app_mut().tick_ms(now + 5);
+            f.compose(&mut c);
+            if f.app().studio_tex().is_some() && now > 400 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        press(&mut f, Btn::A);
+        let start = f.app().now();
+        assert!(
+            f.app().studio_tex().unwrap().hand.is_none(),
+            "the writing was built for a cart that cannot be written on"
+        );
         let cart = f.app().studio().unwrap().cart.clone();
         let rest = slot::studio_view::marker_rest(OUT_W as f32, &cart);
         f.app_mut().tick_ms(start + 2000);

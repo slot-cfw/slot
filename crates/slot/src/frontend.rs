@@ -177,6 +177,7 @@ struct StudioSync {
     under: [Option<TexId>; 2],
     chips: Option<TexId>,
     hand: [Option<TexId>; 6],
+    marker_ink: Option<[u8; 3]>,
 }
 
 impl StudioSync {
@@ -189,6 +190,7 @@ impl StudioSync {
             gen: 0,
             last: None,
             hand: [None; 6],
+            marker_ink: None,
             face_slots: [None; 4],
             bare: None,
             under: [None; 2],
@@ -304,7 +306,8 @@ fn sync_studio(app: &mut App, compositor: &mut Compositor, st: &mut StudioSync) 
                 let hand = faces
                     .hand
                     .as_ref()
-                    .map(|r| upload_hand(compositor, &mut st.hand, r));
+                    .map(|r| upload_hand(compositor, &mut st.hand, &mut st.marker_ink, r))
+                    .or_else(|| app.studio_tex().and_then(|t| t.hand.clone()));
                 app.set_studio_tex(crate::app::StudioTex {
                     faces: texes,
                     bare,
@@ -2905,6 +2908,7 @@ fn upload(compositor: &mut Compositor, slot: &mut Option<TexId>, face: slot_ui::
 fn upload_hand(
     compositor: &mut Compositor,
     slots: &mut [Option<TexId>; 6],
+    marker_ink: &mut Option<[u8; 3]>,
     r: &slot_ui::HandReveal,
 ) -> crate::app::HandTex {
     let cols = crate::studio_faces::HAND_COLS;
@@ -2922,15 +2926,23 @@ fn upload_hand(
     }
     let (mw, mh) = slot_ui::hand::marker_size();
     let (gw, gh) = slot_ui::hand::glow_size();
-    let art = slot_ui::hand::marker_art(r.ink);
     let [blank, ink, cap, body, cap_glow, body_glow] = slots;
+    if *marker_ink != Some(r.ink) {
+        let art = slot_ui::hand::marker_art(r.ink);
+        upload_rgba(compositor, cap, mw, mh, &art.cap);
+        upload_rgba(compositor, body, mw, mh, &art.body);
+        upload_rgba(compositor, cap_glow, gw, gh, &art.cap_glow);
+        upload_rgba(compositor, body_glow, gw, gh, &art.body_glow);
+        *marker_ink = Some(r.ink);
+    }
+    let kept = |t: &Option<TexId>| t.expect("marker art uploaded");
     crate::app::HandTex {
         blank: upload_rgba(compositor, blank, r.blank.w, r.blank.h, &r.blank.rgba),
         atlas: upload_rgba(compositor, ink, aw, ah, &atlas),
-        cap: upload_rgba(compositor, cap, mw, mh, &art.cap),
-        body: upload_rgba(compositor, body, mw, mh, &art.body),
-        cap_glow: upload_rgba(compositor, cap_glow, gw, gh, &art.cap_glow),
-        body_glow: upload_rgba(compositor, body_glow, gw, gh, &art.body_glow),
+        cap: kept(cap),
+        body: kept(body),
+        cap_glow: kept(cap_glow),
+        body_glow: kept(body_glow),
         cell: (r.w, r.h),
         size: (aw, ah),
         pens: r.frames.iter().map(|(_, p)| *p).collect(),

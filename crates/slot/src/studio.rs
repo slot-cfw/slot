@@ -119,6 +119,15 @@ fn rgb_of(d: [u8; 6]) -> [u8; 3] {
     [d[0] * 16 + d[1], d[2] * 16 + d[3], d[4] * 16 + d[5]]
 }
 
+fn writable(cart: &Cart) -> bool {
+    #[cfg(feature = "nds")]
+    if cart.platform == Platform::Nds {
+        return false;
+    }
+    let _ = cart;
+    true
+}
+
 impl Studio {
     pub fn new(cart: Cart, wifi: bool) -> Studio {
         let mut plain = cart.clone();
@@ -129,7 +138,7 @@ impl Studio {
         } else {
             Vec::new()
         };
-        if cart.label.is_some() {
+        if cart.label.is_some() && writable(&cart) {
             sheet.push(LabelKind::Hand);
         }
         let cart_shell = cart.shell;
@@ -204,6 +213,22 @@ impl Studio {
         self.writing
     }
 
+    pub fn shaped(&self) -> Cart {
+        Cart {
+            shell: self.shell,
+            ..self.cart.clone()
+        }
+    }
+
+    pub fn label_unreadable(&mut self) {
+        self.cart.label = None;
+        self.sheet.retain(|k| *k != LabelKind::Hand);
+        if let Screen::Sheet { at } = self.screen {
+            let at = if at < self.sheet.len() { at } else { 0 };
+            self.screen = Screen::Sheet { at };
+        }
+    }
+
     pub fn adopt_text(&mut self, ground: [u8; 3]) {
         self.text_worn = true;
         self.ground = Some(ground);
@@ -236,7 +261,7 @@ impl Studio {
             }
         }
         self.wearing = kind;
-        if !self.wearing_hand() {
+        if !self.wearing_hand() && writable(&self.cart) {
             sheet.push(LabelKind::Hand);
         }
         self.sheet = sheet;
@@ -267,8 +292,6 @@ impl Studio {
             self.wearing
         } else if self.wearing_old_logo() {
             LabelKind::Logo
-        } else if self.wearing_text() {
-            LabelKind::Hand
         } else {
             self.wearing
         }

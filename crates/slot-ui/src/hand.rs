@@ -645,18 +645,26 @@ pub fn glow_size() -> (u32, u32) {
 pub fn marker_art(ink: [u8; 3]) -> &'static MarkerArt {
     static ART: std::sync::Mutex<Vec<([u8; 3], &'static MarkerArt)>> =
         std::sync::Mutex::new(Vec::new());
-    let mut made = ART.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, art)) = made.iter().find(|(c, _)| *c == ink) {
+    let made = || ART.lock().unwrap_or_else(|e| e.into_inner());
+    let find = |list: &[([u8; 3], &'static MarkerArt)]| {
+        list.iter().find(|(c, _)| *c == ink).map(|(_, art)| *art)
+    };
+    if let Some(art) = find(&made()) {
         return art;
     }
     let (body, cap) = (marker_sprite(false, ink), marker_sprite(true, ink));
-    let art: &'static MarkerArt = Box::leak(Box::new(MarkerArt {
+    let built = MarkerArt {
         body_glow: glow(&body),
         cap_glow: glow(&cap),
         body,
         cap,
-    }));
-    made.push((ink, art));
+    };
+    let mut list = made();
+    if let Some(art) = find(&list) {
+        return art;
+    }
+    let art: &'static MarkerArt = Box::leak(Box::new(built));
+    list.push((ink, art));
     art
 }
 

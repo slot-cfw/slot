@@ -48,6 +48,17 @@ fn a_handwritten_cart_offers_no_marker() {
 }
 
 #[test]
+fn a_label_that_cannot_be_read_counts_as_handwriting() {
+    let mut s = Studio::new(cart(Platform::Gba, true), true);
+    s.press(Btn::A);
+    s.press(Btn::Left);
+    s.label_unreadable();
+    assert!(s.wearing_hand());
+    assert_eq!(s.sheet, vec![LabelKind::Real, LabelKind::Logo]);
+    assert_eq!(s.screen, Screen::Sheet { at: 0 });
+}
+
+#[test]
 fn the_marker_leaves_once_it_has_written_and_returns_with_a_label() {
     let mut s = Studio::new(cart(Platform::Gba, true), false);
     to_row(&mut s, Row::Label);
@@ -543,7 +554,7 @@ mod text_label {
         s.ground = Some([1, 2, 3]);
         assert!(s.recolored());
         assert!(s.wearing_text());
-        assert_eq!(s.shown_label(), LabelKind::Hand);
+        assert_eq!(s.shown_label(), LabelKind::Existing);
     }
 
     #[test]
