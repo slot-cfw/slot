@@ -1,4 +1,6 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::Arc;
 
 use crate::link_kind::LinkKind;
 use crate::link_net::{Cancel, TcpLink, HOST_BOUND};
@@ -120,12 +122,17 @@ type Socket = Box<dyn FnMut(u16, &Cancel) -> std::io::Result<TcpLink> + Send>;
 pub struct LinkStarter {
     rx: Receiver<LinkProgress>,
     cancel: Cancel,
+    go: Arc<AtomicBool>,
     done: bool,
 }
 
 impl LinkStarter {
     pub fn spawn(role: RadioRole, port: u16) -> LinkStarter {
-        LinkStarter::spawn_with(
+        LinkStarter::spawn_held(role, port, false)
+    }
+
+    pub fn spawn_held(role: RadioRole, port: u16, held: bool) -> LinkStarter {
+        LinkStarter::spawn_held_with(
             Box::new(link_radio::up),
             Box::new(link_radio::down),
             role,
@@ -134,19 +141,33 @@ impl LinkStarter {
                 RadioRole::Host => TcpLink::host_until(HOST_ADDR, port, HOST_BOUND, cancel),
                 RadioRole::Join(_) => TcpLink::join_until(HOST_ADDR, port, HOST_BOUND, cancel),
             }),
+            held,
         )
     }
 
     pub fn spawn_with(
+        radio_up: RadioUp,
+        radio_down: RadioDown,
+        role: RadioRole,
+        port: u16,
+        socket: Socket,
+    ) -> LinkStarter {
+        LinkStarter::spawn_held_with(radio_up, radio_down, role, port, socket, false)
+    }
+
+    pub fn spawn_held_with(
         mut radio_up: RadioUp,
         mut radio_down: RadioDown,
         role: RadioRole,
         port: u16,
         mut socket: Socket,
+        held: bool,
     ) -> LinkStarter {
         let (tx, rx) = channel();
         let cancel = Cancel::new();
         let flag = cancel.clone();
+        let go = Arc::new(AtomicBool::new(!held));
+        let gate = go.clone();
         std::thread::spawn(move || {
             let _ = tx.send(LinkProgress::At(LinkStep::Radio));
             let hosted = match radio_up(role, &flag) {
@@ -167,6 +188,20 @@ impl LinkStarter {
             };
             if let Some(ap) = hosted {
                 let _ = tx.send(LinkProgress::Hosting(ap));
+            }
+            if !gate.load(Ordering::SeqCst) {
+                eprintln!(
+                    "slot: link: {role:?} radio up at {:.0} ms, held for go",
+                    crate::boot_time::ms()
+                );
+                while !gate.load(Ordering::SeqCst) {
+                    if flag.is_cancelled() {
+                        radio_down();
+                        let _ = tx.send(LinkProgress::Failed(LinkFail::Cancelled));
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
             }
             let _ = tx.send(LinkProgress::At(LinkStep::Waiting));
             eprintln!("slot: link: {role:?} using {HOST_ADDR}:{port}");
@@ -191,8 +226,13 @@ impl LinkStarter {
         LinkStarter {
             rx,
             cancel,
+            go,
             done: false,
         }
+    }
+
+    pub fn go(&self) {
+        self.go.store(true, Ordering::SeqCst);
     }
 
     pub fn without_target() -> LinkStarter {

@@ -226,8 +226,8 @@ fn fake_radio(app: &mut slot::app::App) {
         return;
     };
     app.set_ble(Box::new(UdpBle::start(port)));
-    app.set_link_spawn(Box::new(|role, port| {
-        LinkStarter::spawn_with(
+    app.set_link_spawn(Box::new(|role, port, held| {
+        LinkStarter::spawn_held_with(
             Box::new(|role, _| {
                 Ok(match role {
                     RadioRole::Host => Some(HostAp {
@@ -254,6 +254,7 @@ fn fake_radio(app: &mut slot::app::App) {
                     cancel,
                 ),
             }),
+            held,
         )
     }));
 }

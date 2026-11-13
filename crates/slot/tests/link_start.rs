@@ -383,3 +383,75 @@ fn a_join_passes_the_address_to_the_radio() {
     drain(&mut starter);
     assert_eq!(*got.lock().unwrap(), Some(RadioRole::Join(AP)));
 }
+
+#[test]
+fn a_held_join_brings_the_radio_up_and_waits_for_go_before_the_socket() {
+    let radio = Arc::new(AtomicBool::new(false));
+    let socket = Arc::new(AtomicBool::new(false));
+    let (up, tried) = (radio.clone(), socket.clone());
+    let mut starter = LinkStarter::spawn_held_with(
+        Box::new(move |_, _| {
+            up.store(true, Ordering::SeqCst);
+            Ok(None)
+        }),
+        Box::new(|| {}),
+        RadioRole::Join(AP),
+        0,
+        Box::new(move |_, _| {
+            tried.store(true, Ordering::SeqCst);
+            Err(io::Error::new(io::ErrorKind::ConnectionRefused, "refused"))
+        }),
+        true,
+    );
+    let deadline = Instant::now() + BAIL;
+    while !radio.load(Ordering::SeqCst) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        radio.load(Ordering::SeqCst),
+        "the held join never brought the radio up"
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        !socket.load(Ordering::SeqCst),
+        "a held join opened its socket before go"
+    );
+    starter.go();
+    assert!(matches!(
+        drain(&mut starter),
+        LinkProgress::Failed(LinkFail::PeerVanished)
+    ));
+    assert!(socket.load(Ordering::SeqCst), "go never reached the socket");
+}
+
+#[test]
+fn a_held_join_dropped_before_go_puts_the_radio_back() {
+    let downs = Arc::new(AtomicUsize::new(0));
+    let count = downs.clone();
+    let socket = Arc::new(AtomicBool::new(false));
+    let tried = socket.clone();
+    let starter = LinkStarter::spawn_held_with(
+        Box::new(|_, _| Ok(None)),
+        Box::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }),
+        RadioRole::Join(AP),
+        0,
+        Box::new(move |_, _| {
+            tried.store(true, Ordering::SeqCst);
+            Err(io::Error::other("must not be reached"))
+        }),
+        true,
+    );
+    std::thread::sleep(Duration::from_millis(50));
+    drop(starter);
+    let deadline = Instant::now() + BAIL;
+    while downs.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(downs.load(Ordering::SeqCst), 1, "the radio was left up");
+    assert!(
+        !socket.load(Ordering::SeqCst),
+        "a dropped held join opened its socket"
+    );
+}

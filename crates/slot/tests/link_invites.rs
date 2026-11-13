@@ -45,9 +45,9 @@ fn playing_on(core: Core) -> (App, TempDir, FakeBleRemote, Roles) {
     app.set_ble(Box::new(ble));
     let roles: Roles = Arc::new(Mutex::new(Vec::new()));
     let seen = roles.clone();
-    app.set_link_spawn(Box::new(move |role, _port| {
+    app.set_link_spawn(Box::new(move |role, _port, held| {
         seen.lock().unwrap().push(role);
-        LinkStarter::spawn_with(
+        LinkStarter::spawn_held_with(
             Box::new(|role, _| {
                 Ok(match role {
                     RadioRole::Host => Some(AP),
@@ -58,6 +58,7 @@ fn playing_on(core: Core) -> (App, TempDir, FakeBleRemote, Roles) {
             role,
             0,
             Box::new(|_, cancel| until_cancelled(cancel)),
+            held,
         )
     }));
     (app, d, remote, roles)
@@ -228,7 +229,7 @@ fn join_gives_up_after_the_host_bound() {
         "the join did not give up: {:?}",
         app.game_menu()
     );
-    assert_eq!(last_want(&ble), Some(BleWant::Off));
+    assert_eq!(last_want(&ble), Some(BleWant::Ready));
     assert!(roles.lock().unwrap().is_empty());
 }
 
@@ -322,6 +323,36 @@ fn an_unlocked_shelf_never_listens() {
         ble.wants()
     );
     assert!(!ble.wants().contains(&BleWant::Listen));
+}
+
+fn settle(app: &mut App) {
+    for _ in 0..6 {
+        app.update(1.0);
+    }
+}
+
+#[test]
+fn bluetooth_stays_off_through_boot_then_warms() {
+    let (mut app, _d, ble) = kid_on_shelf(false);
+    assert!(ble.wants().is_empty(), "{:?}", ble.wants());
+    settle(&mut app);
+    assert_eq!(last_want(&ble), Some(BleWant::Ready), "{:?}", ble.wants());
+}
+
+#[test]
+fn closing_the_lid_cools_bluetooth_and_opening_warms_it() {
+    let (mut app, _d, ble) = kid_on_shelf(false);
+    settle(&mut app);
+    assert_eq!(last_want(&ble), Some(BleWant::Ready));
+    app.apply(Action::LidClose);
+    assert!(
+        pump(&mut app, |_| last_want(&ble) == Some(BleWant::Off)),
+        "the closed lid kept Bluetooth on: {:?}",
+        ble.wants()
+    );
+    app.apply(Action::LidOpen);
+    settle(&mut app);
+    assert_eq!(last_want(&ble), Some(BleWant::Ready), "{:?}", ble.wants());
 }
 
 #[test]
@@ -568,22 +599,32 @@ fn far_spawn(
     watch: (Platform, Core, &'static str),
     far: Far,
     spawned: Spawned,
-) -> Box<dyn FnMut(RadioRole, u16) -> LinkStarter + Send> {
-    Box::new(move |role, _port| {
-        let resumed = matches!(
-            slot::persist::read_resume(&root, watch.0, watch.1, watch.2),
-            Ok(Some(_))
-        );
-        spawned.lock().unwrap().push((role, resumed));
+) -> Box<dyn FnMut(RadioRole, u16, bool) -> LinkStarter + Send> {
+    Box::new(move |role, _port, held| {
+        let root = root.clone();
+        let spawned = spawned.clone();
+        let opened = move || {
+            let resumed = matches!(
+                slot::persist::read_resume(&root, watch.0, watch.1, watch.2),
+                Ok(Some(_))
+            );
+            spawned.lock().unwrap().push((role, resumed));
+        };
         let radio: RadioUp = match far {
             Far::NobodyCame => Box::new(|_, _| Err(slot::link_radio::RadioFail::NoHost)),
             _ => Box::new(|_, _| Ok(None)),
         };
         let socket: Socket = match far {
-            Far::Hosts(port) => Box::new(move |_, _| TcpLink::join("127.0.0.1", port)),
-            _ => Box::new(|_, cancel| until_cancelled(cancel)),
+            Far::Hosts(port) => Box::new(move |_, _| {
+                opened();
+                TcpLink::join("127.0.0.1", port)
+            }),
+            _ => Box::new(move |_, cancel| {
+                opened();
+                until_cancelled(cancel)
+            }),
         };
-        LinkStarter::spawn_with(radio, Box::new(|| {}), role, 0, socket)
+        LinkStarter::spawn_held_with(radio, Box::new(|| {}), role, 0, socket, held)
     })
 }
 
@@ -1630,4 +1671,120 @@ fn a_kid_joining_a_cable_host_sees_the_plug() {
     kid.until("the join never started", |k| !k.joined().is_empty());
     assert!(drew(kid.s.app(), 3), "the joiner drew no plug");
     assert!(!drew(kid.s.app(), 4), "the joiner drew the adapter");
+}
+
+#[test]
+fn the_card_joins_the_hotspot_early_but_not_the_game() {
+    let mut kid = emerald_on(Core::Gpsp, Far::Waits);
+    kid.card_for(emerald_from(Core::Gpsp));
+    assert_eq!(kid.s.app().joining_early(), Some(AP));
+    for _ in 0..30 {
+        kid.ble.hear(emerald_from(Core::Gpsp)(&kid.d));
+        kid.step(&[]);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        kid.joined().is_empty(),
+        "the game connection opened before Join: {:?}",
+        kid.joined()
+    );
+    kid.press(Btn::A);
+    kid.until("the join never started", |k| !k.joined().is_empty());
+    assert_eq!(kid.joined(), vec![RadioRole::Join(AP)]);
+    assert_eq!(kid.s.app().joining_early(), None);
+}
+
+#[test]
+fn not_now_leaves_the_hotspot() {
+    let mut kid = emerald_on(Core::Gpsp, Far::Waits);
+    kid.card_for(emerald_from(Core::Gpsp));
+    assert_eq!(kid.s.app().joining_early(), Some(AP));
+    kid.press(Btn::B);
+    kid.step(&[]);
+    assert_eq!(kid.s.app().joining_early(), None);
+    assert!(kid.joined().is_empty());
+}
+
+#[test]
+fn a_vanished_host_leaves_the_hotspot() {
+    let mut kid = emerald_on(Core::Gpsp, Far::Waits);
+    kid.card_for(emerald_from(Core::Gpsp));
+    assert_eq!(kid.s.app().joining_early(), Some(AP));
+    kid.until("the card never closed", |k| {
+        k.s.app().invite_card().is_none()
+    });
+    assert_eq!(kid.s.app().joining_early(), None);
+    assert!(kid.joined().is_empty());
+}
+
+#[test]
+fn home_wifi_waits_while_the_card_joins_early() {
+    let (mut app, d, ble) = kid_on_shelf(true);
+    std::fs::write(d.path().join("Config/wifi.conf"), b"network={}\n").unwrap();
+    let mut fake = slot::wifi::Fake::demo();
+    slot::wifi::Backend::add(&mut fake, "Home", "password", false);
+    let log = fake.log.clone();
+    app.set_wifi(slot::wifi::Wifi::inline(Box::new(fake)));
+    let starts = || log.lock().unwrap().iter().filter(|l| *l == "start").count();
+    ble.hear(common::heard_host(&d, "Emerald", 7, AP, -60));
+    assert!(card_up(&mut app), "the card never opened");
+    assert_eq!(app.joining_early(), Some(AP));
+    for _ in 0..4 {
+        ble.hear(common::heard_host(&d, "Emerald", 7, AP, -60));
+        app.update(1.0);
+    }
+    assert!(app.invite_card().is_some(), "the card closed early");
+    assert_eq!(starts(), 0, "home Wi-Fi took the radio from the early join");
+    app.apply(Action::GbaDown(Btn::B));
+    app.apply(Action::GbaUp(Btn::B));
+    for _ in 0..6 {
+        app.update(1.0);
+    }
+    assert_eq!(app.joining_early(), None);
+    assert_eq!(starts(), 1, "home Wi-Fi never came back after Not now");
+}
+
+#[test]
+fn the_early_join_waits_for_home_wifi_to_let_go() {
+    let (mut app, d, ble) = kid_on_shelf(true);
+    std::fs::write(d.path().join("Config/wifi.conf"), b"network={}\n").unwrap();
+    let mut fake = slot::wifi::Fake::demo();
+    slot::wifi::Backend::add(&mut fake, "Home", "password", false);
+    let log = fake.log.clone();
+    app.set_wifi(slot::wifi::Wifi::inline(Box::new(fake)));
+    for _ in 0..4 {
+        app.update(1.0);
+    }
+    assert!(app.wifi().held, "home Wi-Fi never came up first");
+    let spawned: Arc<Mutex<Vec<(RadioRole, bool, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = spawned.clone();
+    let stops = log.clone();
+    app.set_link_spawn(Box::new(move |role, _port, held| {
+        let stopped = stops
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| *l == "stop")
+            .count();
+        seen.lock().unwrap().push((role, held, stopped));
+        LinkStarter::spawn_held_with(
+            Box::new(|_, _| Ok(None)),
+            Box::new(|| {}),
+            role,
+            0,
+            Box::new(|_, cancel| until_cancelled(cancel)),
+            held,
+        )
+    }));
+    ble.hear(common::heard_host(&d, "Emerald", 7, AP, -60));
+    assert!(card_up(&mut app), "the card never opened");
+    assert!(
+        pump(&mut app, |_| !spawned.lock().unwrap().is_empty()),
+        "the early join never started"
+    );
+    assert_eq!(
+        *spawned.lock().unwrap(),
+        vec![(RadioRole::Join(AP), true, 1)],
+        "the early join started before home Wi-Fi stopped"
+    );
 }

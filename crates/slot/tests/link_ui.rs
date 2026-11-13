@@ -1957,8 +1957,8 @@ fn a_joiner_draws_the_hosts_adapter_and_its_own_cable_afterwards() {
     let _link = common::link_port_lock();
     let (mut app, d) = playing_on(Core::Gpsp);
     app.set_link_sprites(fake_link_sprites());
-    app.set_link_spawn(Box::new(|role, _| {
-        LinkStarter::spawn_with(
+    app.set_link_spawn(Box::new(|role, _, held| {
+        LinkStarter::spawn_held_with(
             Box::new(|_, _| Ok(None)),
             Box::new(|| {}),
             role,
@@ -1969,6 +1969,7 @@ fn a_joiner_draws_the_hosts_adapter_and_its_own_cable_afterwards() {
                 }
                 Err(io_err(io::ErrorKind::Interrupted))
             }),
+            held,
         )
     }));
     let ble = listening(&mut app);

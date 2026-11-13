@@ -92,6 +92,7 @@ const PEEK_HOLD_MS: Millis = 680;
 const PEEK_OUT_MS: Millis = 200;
 const RESUME_MS: Millis = 300_000;
 const SETTLED_MS: Millis = 10_000;
+const BLE_WARM_MS: Millis = 5_000;
 const CARD_CHECK_MS: Millis = 2_000;
 
 const BATTERY_CRITICAL: u8 = 5;
@@ -226,6 +227,14 @@ struct LinkStarting {
     client_id: u16,
 }
 
+struct Prejoin {
+    session: u16,
+    ap: HostAp,
+    starter: Option<LinkStarter>,
+    accepted_at: Option<Millis>,
+    go_since: Option<Millis>,
+}
+
 type GameKnown = (u32, Vec<(Core, u32)>);
 
 struct GameFacts {
@@ -234,7 +243,7 @@ struct GameFacts {
     known: Option<GameKnown>,
 }
 
-type LinkSpawn = Box<dyn FnMut(RadioRole, u16) -> LinkStarter + Send>;
+type LinkSpawn = Box<dyn FnMut(RadioRole, u16, bool) -> LinkStarter + Send>;
 
 type BiosList = Vec<(Platform, Core, u32)>;
 
@@ -686,6 +695,8 @@ pub struct App {
     join_target: Option<HostAp>,
     ble: Box<dyn Ble>,
     ble_on: bool,
+    ble_warm: bool,
+    ble_warm_at: Option<Millis>,
     heard: HashMap<u16, Heard>,
     first_heard: HashMap<u16, Millis>,
     session: Option<u16>,
@@ -693,6 +704,7 @@ pub struct App {
     join_wait: Option<Millis>,
     facts: Option<GameFacts>,
     link_spawn: LinkSpawn,
+    prejoin: Option<Prejoin>,
     invite: Option<InviteCard>,
     ignored: HashSet<u16>,
     finder: Option<crate::invite_find::GameFinder>,
@@ -1214,13 +1226,16 @@ impl App {
             join_target: None,
             ble: crate::ble::ble(),
             ble_on: false,
+            ble_warm: false,
+            ble_warm_at: None,
             heard: HashMap::new(),
             first_heard: HashMap::new(),
             session: None,
             hosted: None,
             join_wait: None,
             facts: None,
-            link_spawn: Box::new(LinkStarter::spawn),
+            link_spawn: Box::new(LinkStarter::spawn_held),
+            prejoin: None,
             invite: None,
             ignored: HashSet::new(),
             finder: None,
@@ -5183,9 +5198,15 @@ impl App {
         self.join_target
     }
 
+    pub fn joining_early(&self) -> Option<HostAp> {
+        self.prejoin.as_ref().map(|p| p.ap)
+    }
+
     pub fn set_ble(&mut self, ble: Box<dyn Ble>) {
         self.ble = ble;
         self.ble_on = false;
+        self.ble_warm = false;
+        self.ble_warm_at = None;
         self.kid_listening = false;
     }
 
@@ -5201,7 +5222,7 @@ impl App {
                     crate::boot_time::ms()
                 );
                 self.radio_down();
-                let starter = (self.link_spawn)(RadioRole::Host, link_port());
+                let starter = (self.link_spawn)(RadioRole::Host, link_port(), false);
                 self.start_link_from(starter, role.client_id(), since);
                 if self.starting.is_some() {
                     self.learn_game();
@@ -5254,8 +5275,39 @@ impl App {
     }
 
     fn start_join(&mut self, ap: HostAp, since: Millis) {
-        self.radio_down();
-        let starter = (self.link_spawn)(RadioRole::Join(ap), link_port());
+        let starter = match self.prejoin.take() {
+            Some(Prejoin {
+                starter: Some(starter),
+                ap: early,
+                ..
+            }) if early == ap => {
+                eprintln!(
+                    "slot: invite: join released at {:.0} ms",
+                    crate::boot_time::ms()
+                );
+                starter.go();
+                starter
+            }
+            Some(mut p) if p.ap == ap => {
+                eprintln!(
+                    "slot: invite: join waits for home Wi-Fi to let go at {:.0} ms",
+                    crate::boot_time::ms()
+                );
+                p.go_since = Some(since);
+                self.prejoin = Some(p);
+                self.game_menu = Some(GameMenu::Working {
+                    role: LinkRow::Join,
+                    step: LinkStep::Radio,
+                    since,
+                });
+                self.ble_off();
+                return;
+            }
+            _ => {
+                self.radio_down();
+                (self.link_spawn)(RadioRole::Join(ap), link_port(), false)
+            }
+        };
         self.start_link_from(starter, LinkRow::Join.client_id(), since);
         self.ble_off();
         if self.starting.is_none() {
@@ -5350,7 +5402,35 @@ impl App {
         self.hosted = None;
         self.join_wait = None;
         if std::mem::take(&mut self.ble_on) {
-            self.ble.set(BleWant::Off);
+            self.ble.set(self.ble_rest());
+        }
+    }
+
+    fn ble_rest(&self) -> BleWant {
+        if self.ble_warm {
+            BleWant::Ready
+        } else {
+            BleWant::Off
+        }
+    }
+
+    fn keep_ble_warm(&mut self) {
+        if self.shutting_down() || matches!(self.phase, Phase::Doze { .. }) {
+            self.ble_warm_at = None;
+            if std::mem::take(&mut self.ble_warm) && !self.ble_on {
+                self.ble.set(BleWant::Off);
+            }
+            return;
+        }
+        if self.ble_warm || !matches!(self.phase, Phase::Shelf | Phase::Playing { .. }) {
+            return;
+        }
+        let at = *self.ble_warm_at.get_or_insert(self.now() + BLE_WARM_MS);
+        if self.now() >= at {
+            self.ble_warm = true;
+            if !self.ble_on {
+                self.ble.set(BleWant::Ready);
+            }
         }
     }
 
@@ -5618,12 +5698,92 @@ impl App {
                 None => "no nickname, showing the fallback".to_string(),
             }
         );
+        let (session, ap) = (
+            heard.advert.session,
+            HostAp {
+                freq_mhz: heard.advert.freq_mhz,
+                bssid: heard.advert.bssid,
+            },
+        );
         self.invite = Some(InviteCard {
             heard,
             stem,
             title,
             shown_at: self.now(),
         });
+        self.start_prejoin(session, ap);
+    }
+
+    fn start_prejoin(&mut self, session: u16, ap: HostAp) {
+        if self.art_busy() {
+            return;
+        }
+        self.drop_prejoin();
+        self.radio_down();
+        self.stop_romm();
+        self.release_radio();
+        self.prejoin = Some(Prejoin {
+            session,
+            ap,
+            starter: None,
+            accepted_at: None,
+            go_since: None,
+        });
+        self.spawn_prejoin();
+    }
+
+    fn spawn_prejoin(&mut self) {
+        let quiet = match &self.wifi {
+            Some((w, _, _)) => !w.busy() && !w.snapshot().held,
+            None => true,
+        };
+        let Some(p) = self.prejoin.as_mut().filter(|p| p.starter.is_none()) else {
+            return;
+        };
+        if !quiet {
+            return;
+        }
+        let (ap, go_since) = (p.ap, p.go_since);
+        eprintln!(
+            "slot: invite: joining the hotspot early at {:.0} ms",
+            crate::boot_time::ms()
+        );
+        let held = go_since.is_none();
+        let starter = (self.link_spawn)(RadioRole::Join(ap), link_port(), held);
+        match go_since {
+            None => p.starter = Some(starter),
+            Some(since) => {
+                self.prejoin = None;
+                self.start_link_from(starter, LinkRow::Join.client_id(), since);
+                if self.starting.is_none() {
+                    self.close_game_menu();
+                }
+            }
+        }
+    }
+
+    fn drop_prejoin(&mut self) {
+        if self.prejoin.take().is_some() && !self.link_active() && self.starting.is_none() {
+            self.radio.ask(RadioJob::Cool);
+        }
+    }
+
+    fn sync_prejoin(&mut self) {
+        let Some(p) = &self.prejoin else {
+            return;
+        };
+        let carded = self
+            .invite
+            .as_ref()
+            .is_some_and(|c| c.session() == p.session);
+        let pending = p.accepted_at.is_some_and(|at| {
+            self.now().saturating_sub(at) < crate::link_net::HOST_BOUND.as_millis() as Millis
+        });
+        let away = self.shutting_down() || matches!(self.phase, Phase::Doze { .. });
+        if away || !(carded || pending) {
+            return self.drop_prejoin();
+        }
+        self.spawn_prejoin();
     }
 
     fn invite_in_game(&mut self) {
@@ -5742,6 +5902,14 @@ impl App {
             crate::boot_time::ms()
         );
         self.ignored.insert(card.session());
+        let now = self.now();
+        if let Some(p) = self
+            .prejoin
+            .as_mut()
+            .filter(|p| p.session == card.session())
+        {
+            p.accepted_at = Some(now);
+        }
         if self.seated().is_some() {
             self.flush_resume();
         } else if self.on_shelf() {
@@ -7132,7 +7300,9 @@ impl App {
         self.timers();
         self.poll_link();
         self.poll_ble();
+        self.keep_ble_warm();
         self.poll_invites();
+        self.sync_prejoin();
         self.settle_switch();
         self.sync_bottom_backlight();
         let now = self.now();
@@ -11110,6 +11280,7 @@ impl App {
                 | Phase::Unwrap { .. }
         ) && self.seated_cart().is_none()
             && !self.link_active()
+            && self.prejoin.is_none()
             && !self.shutting_down()
             && !self.state.wifi_off
             && (self.has_saved()
@@ -14725,6 +14896,9 @@ impl App {
     fn close_game_menu(&mut self) {
         self.game_menu = None;
         self.ble_off();
+        if self.prejoin.as_ref().is_some_and(|p| p.go_since.is_some()) {
+            self.drop_prejoin();
+        }
         if let Some(mut starting) = self.starting.take() {
             starting.starter.cancel();
         }
