@@ -113,6 +113,14 @@ Bezels are hidden when the picture fills the screen.
 
 See [Customization](customizing.md) for details on how to make your own.
 
+## Overlays
+
+An overlay is a translucent image laid over the game, under the bezel. slot does not ship with any. 
+
+The Overlay row only appears after you add one.
+
+See [Customization](customizing.md#overlays) for how to make and add them.
+
 ## Brightness and blue light
 
 | Button                                                 | Does       |
