@@ -713,6 +713,7 @@ fn cartridges() -> [(&'static str, Cart); 2] {
                 code: String::new(),
                 shell: None,
                 title: "POKEMON EMER".into(),
+                tags: Vec::new(),
             },
         ),
         (
@@ -725,6 +726,7 @@ fn cartridges() -> [(&'static str, Cart); 2] {
                 code: String::new(),
                 shell: None,
                 title: "TETRIS".into(),
+                tags: Vec::new(),
             },
         ),
     ]

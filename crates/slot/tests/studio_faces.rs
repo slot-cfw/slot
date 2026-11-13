@@ -12,6 +12,7 @@ fn cart(shell: Option<ShellChoice>) -> Cart {
         title: "PROBE".into(),
         code: String::new(),
         shell,
+        tags: Vec::new(),
     }
 }
 
@@ -51,7 +52,7 @@ fn a_preview_uses_the_edited_shell() {
     let title = |f: &slot::studio_faces::StudioFaces| {
         f.faces
             .iter()
-            .find(|(k, _)| *k == LabelKind::Title)
+            .find(|(k, _)| *k == LabelKind::Hand)
             .unwrap()
             .1
             .rgba
@@ -108,7 +109,7 @@ fn a_tinted_text_label_previews_its_color() {
     let title = |f: &slot::studio_faces::StudioFaces| {
         f.faces
             .iter()
-            .find(|(k, _)| *k == slot::studio::LabelKind::Title)
+            .find(|(k, _)| *k == slot::studio::LabelKind::Hand)
             .unwrap()
             .1
             .rgba

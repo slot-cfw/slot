@@ -40,6 +40,7 @@ const ALERT_INK: [u8; 3] = [0xf0, 0xb4, 0x3c];
 
 pub struct Frontend {
     session: Session,
+    write_gaps: Option<(Instant, Vec<f32>)>,
     grounds: Option<(TexId, Option<TexId>, (u32, u32))>,
     start: Instant,
     last: Instant,
@@ -175,6 +176,7 @@ struct StudioSync {
     bare: Option<TexId>,
     under: [Option<TexId>; 2],
     chips: Option<TexId>,
+    hand: [Option<TexId>; 6],
 }
 
 impl StudioSync {
@@ -186,6 +188,7 @@ impl StudioSync {
             chips_for: None,
             gen: 0,
             last: None,
+            hand: [None; 6],
             face_slots: [None; 4],
             bare: None,
             under: [None; 2],
@@ -205,6 +208,7 @@ fn sync_studio(app: &mut App, compositor: &mut Compositor, st: &mut StudioSync) 
             (Legend::Back, G::B, "Back"),
             (Legend::Open, G::A, "Open"),
             (Legend::Apply, G::A, "Apply"),
+            (Legend::Write, G::A, "Write"),
             (Legend::Change, G::LeftRight, "Change"),
             (Legend::ChangeVertical, G::UpDown, "Change"),
             (Legend::Move, G::LeftRight, "Move"),
@@ -278,7 +282,7 @@ fn sync_studio(app: &mut App, compositor: &mut Compositor, st: &mut StudioSync) 
                     LabelKind::Existing => 0,
                     LabelKind::Real => 1,
                     LabelKind::Logo => 2,
-                    LabelKind::Title => 3,
+                    LabelKind::Hand => 3,
                 };
                 let (w, h) = (faces.bare.w, faces.bare.h);
                 let mut texes = Vec::new();
@@ -297,12 +301,17 @@ fn sync_studio(app: &mut App, compositor: &mut Compositor, st: &mut StudioSync) 
                         upload_rgba(compositor, ub, b.w, b.h, &b.rgba),
                     ]
                 });
+                let hand = faces
+                    .hand
+                    .as_ref()
+                    .map(|r| upload_hand(compositor, &mut st.hand, r));
                 app.set_studio_tex(crate::app::StudioTex {
                     faces: texes,
                     bare,
                     under,
                     w,
                     h,
+                    hand,
                 });
             }
         }
@@ -480,6 +489,7 @@ fn sync_fetch_art(app: &mut App, compositor: &mut Compositor, st: &mut FetchSync
                         under,
                         w: set.done.w,
                         h: set.done.h,
+                        inked: set.inked,
                     },
                 );
             }
@@ -611,6 +621,7 @@ impl Frontend {
             .set_power(Power::new(platform, DOZE_TIMEOUT));
         Frontend {
             session,
+            write_gaps: None,
             start: now,
             last: now,
             draws: Vec::new(),
@@ -1112,6 +1123,38 @@ impl Frontend {
         compositor.fit(window);
         self.compose(compositor);
         compositor.end_frame(window);
+        self.time_write();
+    }
+
+    fn time_write(&mut self) {
+        if !crate::latency::tracing() {
+            return;
+        }
+        let writing = self.session.app().studio().is_some_and(|s| s.writing());
+        let now = Instant::now();
+        match (&mut self.write_gaps, writing) {
+            (None, true) => self.write_gaps = Some((now, Vec::new())),
+            (Some((last, gaps)), true) => {
+                gaps.push(now.duration_since(*last).as_secs_f32() * 1000.0);
+                *last = now;
+            }
+            (Some(_), false) => {
+                let (_, mut gaps) = self.write_gaps.take().unwrap();
+                if gaps.is_empty() {
+                    return;
+                }
+                gaps.sort_by(f32::total_cmp);
+                let mean = gaps.iter().sum::<f32>() / gaps.len() as f32;
+                let p95 = gaps[(gaps.len() * 95 / 100).min(gaps.len() - 1)];
+                let over = gaps.iter().filter(|g| **g > 20.0).count();
+                eprintln!(
+                    "slot: write: {} frames, mean {mean:.1} ms, p95 {p95:.1} ms, max {:.1} ms, over 20 ms {over}",
+                    gaps.len(),
+                    gaps[gaps.len() - 1]
+                );
+            }
+            (None, false) => {}
+        }
     }
 
     fn grab_link_shot(&mut self, compositor: &mut Compositor) {
@@ -2857,6 +2900,41 @@ fn sync_box_art(app: &mut App, compositor: &mut Compositor, sync: &mut BoxArtSyn
 
 fn upload(compositor: &mut Compositor, slot: &mut Option<TexId>, face: slot_ui::UndoFace) -> TexId {
     upload_rgba(compositor, slot, face.w, face.h, &face.rgba)
+}
+
+fn upload_hand(
+    compositor: &mut Compositor,
+    slots: &mut [Option<TexId>; 6],
+    r: &slot_ui::HandReveal,
+) -> crate::app::HandTex {
+    let cols = crate::studio_faces::HAND_COLS;
+    let rows = (r.frames.len() as u32).div_ceil(cols);
+    let (aw, ah) = (r.w * cols, r.h * rows);
+    let row = (r.w * 4) as usize;
+    let mut atlas = vec![0u8; (aw * ah * 4) as usize];
+    for (i, (rgba, _)) in r.frames.iter().enumerate() {
+        let (ox, oy) = ((i as u32 % cols) * r.w, (i as u32 / cols) * r.h);
+        for y in 0..r.h {
+            let d = (((oy + y) * aw + ox) * 4) as usize;
+            let s = y as usize * row;
+            atlas[d..d + row].copy_from_slice(&rgba[s..s + row]);
+        }
+    }
+    let (mw, mh) = slot_ui::hand::marker_size();
+    let (gw, gh) = slot_ui::hand::glow_size();
+    let art = slot_ui::hand::marker_art(r.ink);
+    let [blank, ink, cap, body, cap_glow, body_glow] = slots;
+    crate::app::HandTex {
+        blank: upload_rgba(compositor, blank, r.blank.w, r.blank.h, &r.blank.rgba),
+        atlas: upload_rgba(compositor, ink, aw, ah, &atlas),
+        cap: upload_rgba(compositor, cap, mw, mh, &art.cap),
+        body: upload_rgba(compositor, body, mw, mh, &art.body),
+        cap_glow: upload_rgba(compositor, cap_glow, gw, gh, &art.cap_glow),
+        body_glow: upload_rgba(compositor, body_glow, gw, gh, &art.body_glow),
+        cell: (r.w, r.h),
+        size: (aw, ah),
+        pens: r.frames.iter().map(|(_, p)| *p).collect(),
+    }
 }
 
 fn upload_rgba(

@@ -16,6 +16,7 @@ fn shelf_with(n: usize) -> Shelf {
                 code: String::new(),
                 shell: None,
                 title: format!("GAME {i}"),
+                tags: Vec::new(),
             })
             .collect(),
     )
@@ -739,6 +740,7 @@ fn gb_shelf_with(n: usize) -> Shelf {
                 code: String::new(),
                 shell: None,
                 title: format!("PAK {i}"),
+                tags: Vec::new(),
             })
             .collect(),
     )
@@ -793,6 +795,7 @@ fn a_colour_pak_and_a_grey_one_are_backed_by_their_own_shells() {
                 code: String::new(),
                 shell: None,
                 title: (*stem).to_uppercase(),
+                tags: Vec::new(),
             }
         })
         .collect();
@@ -859,6 +862,7 @@ fn a_cart_pushed_onto_the_row_draws_rather_than_stopping_the_device() {
         code: String::new(),
         shell: None,
         title: "PUSHED".into(),
+        tags: Vec::new(),
     });
     settle(&mut s);
     assert_eq!(
@@ -878,6 +882,7 @@ fn a_clear_cart_is_drawn_over_its_board_and_a_solid_one_is_not() {
         code: code.into(),
         shell: None,
         title: stem.to_uppercase(),
+        tags: Vec::new(),
     };
     let board = TexId::from_raw(80);
     for (code, clear) in [("BPEE", true), ("BPRE", false)] {
@@ -909,6 +914,7 @@ fn a_clear_cart_draws_its_interior_then_the_board_then_the_plastic() {
         code: "BPEE".into(),
         shell: None,
         title: "GAME".into(),
+        tags: Vec::new(),
     }]);
     settle(&mut s);
     let (interior, board, face) = (
@@ -957,6 +963,7 @@ fn a_clear_pak_draws_its_interior_then_the_board_then_the_plastic() {
             finish: ShellFinish::Clear,
         }),
         title: "PAK".into(),
+        tags: Vec::new(),
     }]);
     settle(&mut s);
     let (interior, board, face) = (
@@ -987,6 +994,7 @@ fn only_a_clear_cart_has_anything_behind_its_plastic() {
         code: code.into(),
         shell: None,
         title: stem.to_uppercase(),
+        tags: Vec::new(),
     };
     let (interior, board) = (TexId::from_raw(81), TexId::from_raw(80));
     for (code, clear) in [("BPEE", true), ("BPRE", false)] {
@@ -1018,6 +1026,7 @@ fn a_pak_draws_its_folder_shape_until_its_rom_is_indexed() {
             code: String::new(),
             shell: None,
             title: stem.to_uppercase(),
+            tags: Vec::new(),
         })
         .collect();
     let mut rom = vec![0u8; 0x150];
@@ -1064,6 +1073,7 @@ fn mixed_shelf(platforms: &[Platform]) -> Shelf {
                 code: String::new(),
                 shell: None,
                 title: format!("MIXED {i}"),
+                tags: Vec::new(),
             })
             .collect(),
     );
@@ -1267,6 +1277,7 @@ fn lettered_shelf(n: usize) -> Shelf {
                     code: String::new(),
                     shell: None,
                     title: format!("{letter} GAME {i}"),
+                    tags: Vec::new(),
                 }
             })
             .collect(),

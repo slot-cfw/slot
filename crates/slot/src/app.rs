@@ -173,6 +173,20 @@ pub struct StudioTex {
     pub under: Option<[TexId; 2]>,
     pub w: u32,
     pub h: u32,
+    pub hand: Option<HandTex>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HandTex {
+    pub blank: TexId,
+    pub atlas: TexId,
+    pub cap: TexId,
+    pub body: TexId,
+    pub cap_glow: TexId,
+    pub body_glow: TexId,
+    pub cell: (u32, u32),
+    pub size: (u32, u32),
+    pub pens: Vec<[f32; 2]>,
 }
 
 const WIFI_SETTLE_MS: Millis = 2_000;
@@ -182,6 +196,9 @@ const WIFI_RETRY_MS: Millis = 60_000;
 const WIFI_PROBE_MS: Millis = 1_000;
 const SUMMARY_WAIT_MS: f64 = 1500.0;
 const SLIP_SHUFFLE_PX: f32 = 28.0;
+const WRITE_LEAD: f32 = 0.10;
+const MARKER_GLOW: f32 = 0.45;
+const WRITE_SPAN: f32 = 0.80;
 pub const LINK_SCRIM: [f32; 4] = [0.0, 0.0, 0.0, 0.5];
 const LINK_LEGEND_GAP: f32 = 40.0;
 const LINK_LEGEND_EDGE: f32 = 0.0;
@@ -585,6 +602,7 @@ fn shelled(colour: [u8; 3], finish: slot_store::ShellFinish) -> Cart {
             colour,
             finish,
         }),
+        tags: Vec::new(),
     }
 }
 
@@ -863,6 +881,8 @@ pub struct App {
     studio_disc: Option<TexId>,
     studio_printer: Option<TexId>,
     studio_scene: Option<crate::studio::ApplyScene>,
+    studio_writing: Option<f64>,
+    studio_marker: Option<(bool, f64)>,
     studio_slips: Vec<crate::studio::Slip>,
     studio_prints: u32,
     studio_shuffled: f64,
@@ -1086,6 +1106,8 @@ impl App {
             studio_disc: None,
             studio_printer: None,
             studio_scene: None,
+            studio_writing: None,
+            studio_marker: None,
             studio_slips: Vec::new(),
             studio_prints: 0,
             studio_shuffled: f64::NEG_INFINITY,
@@ -11151,8 +11173,11 @@ impl App {
             self.studio_shelf_face = face;
             self.studio_shelf_under = under;
             self.studio_opened = self.now();
+            self.studio_marker = None;
             use slot_ui::house_label::LabelTag;
             let mut studio = crate::studio::Studio::new(cart, wifi);
+            studio.marker_below =
+                crate::studio_view::marker_rest(self.canvas().w, &studio.cart).deg != 0.0;
             let tag = self.root.as_deref().and_then(|root| {
                 let label = crate::art::make::label_path(root, &studio.cart);
                 slot_ui::house_label::label_tag(&std::fs::read(label).ok()?)
@@ -11403,8 +11428,57 @@ impl App {
         self.core_stale = true;
     }
 
+    fn tick_marker(&mut self, now: f64) {
+        let want = self.studio_writing.is_some()
+            || self.studio.as_ref().is_some_and(|s| {
+                matches!(s.screen, crate::studio::Screen::Sheet { .. })
+                    && s.sheet.contains(&crate::studio::LabelKind::Hand)
+            });
+        let ready = self.studio_tex.as_ref().is_some_and(|t| t.hand.is_some());
+        let out = self.studio_marker.is_some_and(|(out, _)| out);
+        let want = want && (out || self.studio_scene.is_none());
+        match self.studio_marker {
+            None if ready => {
+                let since = if want { now } else { f64::NEG_INFINITY };
+                self.studio_marker = Some((want, since));
+            }
+            Some((was, _)) if was != want => self.studio_marker = Some((want, now)),
+            _ => {}
+        }
+    }
+
+    fn marker_out(&self) -> (f32, f32) {
+        use crate::studio::{MARKER_SLIDE_MS, UNCAP_MS};
+        let Some((out, since)) = self.studio_marker else {
+            return (0.0, 0.0);
+        };
+        let t = (self.now() as f64 - since) as f32;
+        let part = |from: f32, len: f32| ease(((t - from) / len).clamp(0.0, 1.0));
+        if out {
+            (part(0.0, MARKER_SLIDE_MS), part(MARKER_SLIDE_MS, UNCAP_MS))
+        } else {
+            (
+                1.0 - part(UNCAP_MS, MARKER_SLIDE_MS),
+                1.0 - part(0.0, UNCAP_MS),
+            )
+        }
+    }
+
     fn tick_tray(&mut self, now: f64) {
         use crate::studio::LabelKind;
+        if let Some(t0) = self.studio_writing {
+            let writing = self.studio.as_ref().is_some_and(|s| s.writing());
+            if !writing {
+                self.studio_writing = None;
+            } else if now - t0 >= crate::studio::WRITE_MS + self.write_lead() {
+                self.studio_writing = None;
+                let done = self.studio.as_mut().and_then(|s| s.written());
+                if let Some(crate::studio::Effect::Apply(kind)) = done {
+                    self.studio_apply(kind);
+                }
+            }
+        }
+        self.tick_marker(now);
         if self.studio_scene.is_some() {
             return;
         }
@@ -11432,7 +11506,7 @@ impl App {
             LabelKind::Existing,
             LabelKind::Real,
             LabelKind::Logo,
-            LabelKind::Title,
+            LabelKind::Hand,
         ]
         .into_iter()
         .filter(|k| self.studio_face(*k).is_some())
@@ -11540,7 +11614,7 @@ impl App {
         let tex = self.studio_tex.as_ref()?;
         let find = |k| tex.faces.iter().find(|(f, _)| *f == k).map(|(_, t)| *t);
         match kind {
-            LabelKind::Existing => find(LabelKind::Existing).or(find(LabelKind::Title)),
+            LabelKind::Existing => find(LabelKind::Existing).or(find(LabelKind::Hand)),
             _ => find(kind),
         }
     }
@@ -11548,7 +11622,7 @@ impl App {
     fn studio_shown(&self) -> crate::studio::LabelKind {
         self.studio
             .as_ref()
-            .map_or(crate::studio::LabelKind::Title, |s| s.shown_label())
+            .map_or(crate::studio::LabelKind::Hand, |s| s.shown_label())
     }
 
     fn studio_cart_rect(&self) -> [f32; 4] {
@@ -11620,11 +11694,14 @@ impl App {
         }
         self.draw_studio_ground(0.0, out);
         let shown = view(studio, canvas.w);
+        let applying = self.studio_scene.is_some()
+            && matches!(studio.screen, crate::studio::Screen::Sheet { .. });
         for item in &shown.items {
             let start = out.len();
             match item {
                 Item::Cart => self.draw_studio_cart(out),
                 Item::Sheet => self.draw_studio_sheet(out),
+                Item::Text { .. } if applying => {}
                 Item::Text {
                     text,
                     style,
@@ -11727,6 +11804,9 @@ impl App {
             if !ready || self.studio_scene.is_some() {
                 legends.retain(|l| *l != Legend::Apply);
             }
+            if self.studio_scene.is_some() {
+                legends.retain(|l| *l != Legend::Write);
+            }
         }
         let n = legends.len();
         let light = self.light();
@@ -11793,6 +11873,21 @@ impl App {
         if let Some(scene) = &self.studio_scene {
             return self.draw_apply_cart(scene, tex, false, out);
         }
+        if let (Some(t0), Some(hand)) = (self.studio_writing, &tex.hand) {
+            let gone = self.now() as f64 - t0;
+            let peel = crate::studio::PEEL_MS;
+            if gone < peel {
+                out.push(quad(tex.bare));
+                let worn = self.studio.as_ref().map(|s| s.wearing);
+                let worn = worn.and_then(|k| self.studio_face(k));
+                if let Some(old) = worn.or(self.studio_face(crate::studio::LabelKind::Existing)) {
+                    self.draw_peel(tex, old, gone, out);
+                }
+                return;
+            }
+            out.push(quad(hand.blank));
+            return self.draw_ink(hand, tex, rect, t0, out);
+        }
         let shown = self.studio_face(self.studio_shown());
         if let Some(face) = shown.or(self.studio_face(crate::studio::LabelKind::Existing)) {
             out.push(quad(face));
@@ -11833,6 +11928,55 @@ impl App {
                 alpha: 1.0,
             });
         }
+    }
+
+    fn draw_peel(&self, tex: &StudioTex, old: TexId, gone: f64, out: &mut Vec<Draw>) {
+        use crate::studio::{apply_stage, ApplyStage};
+        use crate::studio_view::well_of;
+        use slot_ui::sticker_curl::Pose;
+        let Some(studio) = &self.studio else {
+            return;
+        };
+        let [x, y, w, h] = self.studio_cart_rect();
+        let well = well_of(&studio.cart);
+        let (sx, sy) = (w / tex.w as f32, h / tex.h as f32);
+        let rect = [
+            x + well[0] as f32 * sx,
+            y + well[1] as f32 * sy,
+            well[2] as f32 * sx,
+            well[3] as f32 * sy,
+        ];
+        let centre = [x + w / 2.0, y + h / 2.0];
+        let tilt = crate::studio_view::CART_TILT;
+        let seat = crate::studio_view::turned(rect, centre, tilt)[0];
+        let (dx, dy) = (seat[0] - rect[0], seat[1] - rect[1]);
+        let (stage, p) = apply_stage(gone);
+        let (flat, curl, pose) = match stage {
+            ApplyStage::Peel => {
+                let q = p * p;
+                let seated = Pose {
+                    x: dx,
+                    y: dy,
+                    z: 0.0,
+                    turn_deg: tilt,
+                    scale: 1.0,
+                };
+                (1.0 - q, 150.0 + 270.0 * q, seated)
+            }
+            ApplyStage::Toss => {
+                let (q, arc) = (p * p, (p * std::f32::consts::PI).sin());
+                let pose = Pose {
+                    x: dx - 520.0 * q,
+                    y: dy - 60.0 * q - 50.0 * arc,
+                    z: 90.0 * arc,
+                    turn_deg: tilt - 24.0 * q,
+                    scale: 1.0,
+                };
+                (0.0, 420.0, pose)
+            }
+            _ => return,
+        };
+        self.studio_sticker(old, tex, well, rect, flat, curl, pose, out);
     }
 
     fn draw_apply_cart(
@@ -11889,10 +12033,18 @@ impl App {
         else {
             return;
         };
+        let inked = match scene.was {
+            crate::studio::LabelKind::Hand => true,
+            crate::studio::LabelKind::Existing => {
+                self.studio.as_ref().is_some_and(|s| s.cart.label.is_none())
+            }
+            _ => false,
+        };
+        let base = if inked { old } else { tex.bare };
         if !top {
             out.push(Draw::Quad {
                 corners: cart,
-                tex: tex.bare,
+                tex: base,
                 uv: [0.0, 0.0, 1.0, 1.0],
                 alpha: 1.0,
             });
@@ -11902,6 +12054,7 @@ impl App {
             self.studio_sticker(t, tex, well, rect, flat, curl, pose, out)
         };
         match stage {
+            ApplyStage::Peel | ApplyStage::Toss if inked => {}
             ApplyStage::Peel => {
                 let q = p * p;
                 stick(old, 1.0 - q, 150.0 + 270.0 * q, seated, out);
@@ -12002,6 +12155,187 @@ impl App {
                 well[3] as f32 / fh,
             ],
         });
+    }
+
+    fn write_lead(&self) -> f64 {
+        crate::studio::PEEL_MS
+    }
+
+    fn write_progress(&self, t0: f64) -> f32 {
+        ((self.now() as f64 - t0 - self.write_lead()) / crate::studio::WRITE_MS).clamp(0.0, 1.0)
+            as f32
+    }
+
+    fn label_quad(&self, tex: &StudioTex, rect: [f32; 4]) -> ([f32; 4], [f32; 2], f32) {
+        let Some(studio) = &self.studio else {
+            return ([0.0; 4], [0.0; 2], 0.0);
+        };
+        let well = crate::studio_view::well_of(&studio.cart);
+        let (sx, sy) = (rect[2] / tex.w as f32, rect[3] / tex.h as f32);
+        let label = [
+            rect[0] + well[0] as f32 * sx,
+            rect[1] + well[1] as f32 * sy,
+            well[2] as f32 * sx,
+            well[3] as f32 * sy,
+        ];
+        (
+            label,
+            [rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0],
+            crate::studio_view::CART_TILT,
+        )
+    }
+
+    fn draw_ink(
+        &self,
+        hand: &HandTex,
+        tex: &StudioTex,
+        rect: [f32; 4],
+        t0: f64,
+        out: &mut Vec<Draw>,
+    ) {
+        let frames = hand.pens.len();
+        if frames == 0 {
+            return;
+        }
+        let ink_p = ((self.write_progress(t0) - WRITE_LEAD) / WRITE_SPAN).clamp(0.0, 1.0);
+        if ink_p <= 0.0 {
+            return;
+        }
+        let f = ((ink_p * frames as f32).ceil() as usize).clamp(1, frames) - 1;
+        let cols = crate::studio_faces::HAND_COLS;
+        let (cw, ch) = hand.cell;
+        let (aw, ah) = (hand.size.0 as f32, hand.size.1 as f32);
+        let (cx, cy) = ((f as u32 % cols) * cw, (f as u32 / cols) * ch);
+        let (label, centre, tilt) = self.label_quad(tex, rect);
+        out.push(Draw::Quad {
+            corners: crate::studio_view::turned(label, centre, tilt),
+            tex: hand.atlas,
+            uv: [
+                cx as f32 / aw,
+                cy as f32 / ah,
+                cw as f32 / aw,
+                ch as f32 / ah,
+            ],
+            alpha: 1.0,
+        });
+    }
+
+    fn draw_marker(&self, out: &mut Vec<Draw>) {
+        use crate::studio_view::{marker_len, marker_rest, turned};
+        let (Some(studio), Some(tex)) = (&self.studio, &self.studio_tex) else {
+            return;
+        };
+        let Some(hand) = tex.hand.as_ref() else {
+            return;
+        };
+        let mh = marker_len(self.canvas().w, studio.cart.platform);
+        let mw = mh * slot_ui::hand::MARKER_W as f32 / slot_ui::hand::MARKER_H as f32;
+        let laid = marker_rest(self.canvas().w, &studio.cart);
+        let rest = [laid.at[0], laid.at[1] + self.canvas().inset_y()];
+        let small = laid.len / mh;
+        let cap = [laid.cap[0], laid.cap[1] + self.canvas().inset_y()];
+        let picked = match studio.screen {
+            crate::studio::Screen::Sheet { at } => studio.sheet.get(at).copied(),
+            _ => None,
+        };
+        let held = picked == Some(crate::studio::LabelKind::Hand);
+        let sprite = |centre: [f32; 2], deg: f32, k: f32, tex: TexId, out: &mut Vec<Draw>| {
+            let (w, h) = (mw * k, mh * k);
+            let box_ = [centre[0] - w / 2.0, centre[1] - h / 2.0, w, h];
+            out.push(Draw::Quad {
+                corners: turned(box_, centre, deg),
+                tex,
+                uv: [0.0, 0.0, 1.0, 1.0],
+                alpha: 1.0,
+            });
+        };
+        let Some(t0) = self.studio_writing else {
+            let (slide, uncap) = self.marker_out();
+            if slide <= 0.0 {
+                return;
+            }
+            let settled = slide >= 1.0 && uncap >= 1.0;
+            let held = held && settled;
+            let lift = if held { -10.0 } else { 0.0 };
+            if !settled {
+                let drop = (1.0 - slide) * (self.canvas().h - rest[1] + mh * small);
+                let body = [rest[0], rest[1] + drop];
+                let r = laid.deg.to_radians();
+                let pull = (uncap * std::f32::consts::PI).sin() * mh * small * 0.12;
+                let off = [
+                    body[0] - r.sin() * pull + (cap[0] - body[0]) * uncap,
+                    body[1] + r.cos() * pull + (cap[1] - body[1]) * uncap,
+                ];
+                let deg = laid.deg + (laid.cap_deg - laid.deg) * uncap;
+                sprite(body, laid.deg, small, hand.body, out);
+                sprite(off, deg, small, hand.cap, out);
+                return;
+            }
+            if held {
+                let (gw, gh) = slot_ui::hand::glow_size();
+                let (sw, sh) = slot_ui::hand::marker_size();
+                let (kx, ky) = (gw as f32 / sw as f32, gh as f32 / sh as f32);
+                for (at, deg, tex) in [
+                    (cap, laid.cap_deg, hand.cap_glow),
+                    (rest, laid.deg, hand.body_glow),
+                ] {
+                    let (w, h) = (mw * small * kx, mh * small * ky);
+                    let c = [at[0], at[1] + lift];
+                    out.push(Draw::Quad {
+                        corners: turned([c[0] - w / 2.0, c[1] - h / 2.0, w, h], c, deg),
+                        tex,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        alpha: MARKER_GLOW,
+                    });
+                }
+            }
+            sprite([cap[0], cap[1] + lift], laid.cap_deg, small, hand.cap, out);
+            sprite([rest[0], rest[1] + lift], laid.deg, small, hand.body, out);
+            return;
+        };
+        let frames = hand.pens.len();
+        if frames == 0 {
+            return;
+        }
+        let p = self.write_progress(t0);
+        let ink_p = ((p - WRITE_LEAD) / WRITE_SPAN).clamp(0.0, 1.0);
+        let at = ink_p * (frames - 1) as f32;
+        let lo = at.floor() as usize;
+        let hi = (lo + 1).min(frames - 1);
+        let fr = at - at.floor();
+        let pen = [
+            hand.pens[lo][0] + (hand.pens[hi][0] - hand.pens[lo][0]) * fr,
+            hand.pens[lo][1] + (hand.pens[hi][1] - hand.pens[lo][1]) * fr,
+        ];
+        let (label, centre, tilt) = self.label_quad(tex, self.studio_cart_rect());
+        let (cw, ch) = hand.cell;
+        let flat = [
+            label[0] + pen[0] * label[2] / cw as f32,
+            label[1] + pen[1] * label[3] / ch as f32,
+        ];
+        let tip = turned([flat[0], flat[1], 0.0, 0.0], centre, tilt)[0];
+        let away = if p < WRITE_LEAD {
+            1.0 - p / WRITE_LEAD
+        } else if p > WRITE_LEAD + WRITE_SPAN {
+            (p - WRITE_LEAD - WRITE_SPAN) / (1.0 - WRITE_LEAD - WRITE_SPAN)
+        } else {
+            0.0
+        };
+        let e = away * away * (3.0 - 2.0 * away);
+        let r = laid.deg.to_radians();
+        let half = laid.len / 2.0;
+        let end = [rest[0] - r.sin() * half, rest[1] + r.cos() * half];
+        let nib = [
+            tip[0] + (end[0] - tip[0]) * e,
+            tip[1] + (end[1] - tip[1]) * e,
+        ];
+        let deg = 24.0 + (laid.deg - 24.0) * e;
+        let k = 1.0 + (small - 1.0) * e;
+        let r = deg.to_radians();
+        let half = mh * k / 2.0;
+        let centre = [nib[0] + r.sin() * half, nib[1] - r.cos() * half];
+        sprite(cap, laid.cap_deg, small, hand.cap, out);
+        sprite(centre, deg, k, hand.body, out);
     }
 
     pub fn studio_apart(&self) -> f32 {
@@ -12142,6 +12476,7 @@ impl App {
             h: 7.0,
             colour,
         });
+        self.draw_marker(out);
     }
 
     fn set_cart_label(&mut self, platform: Platform, stem: &str, label: Option<PathBuf>) {
@@ -12173,7 +12508,7 @@ impl App {
                 Ok(kept) => kept,
                 Err(_) => return false,
             },
-            LabelKind::Title => None,
+            LabelKind::Hand => None,
         };
         if matches!(kind, LabelKind::Real | LabelKind::Logo) && src.is_none() {
             return false;
@@ -12285,7 +12620,8 @@ impl App {
                 let picked = studio.sheet.get(at).copied();
                 let slip = self.studio_slips.iter().find(|s| Some(s.kind) == picked);
                 let resting = slip.filter(|s| !s.moving(now as f64));
-                if btn == Btn::A && resting.is_none() {
+                let marker = picked == Some(crate::studio::LabelKind::Hand);
+                if btn == Btn::A && resting.is_none() && !marker {
                     return;
                 }
                 resting.map_or(0.0, |s| s.y1)
@@ -12304,6 +12640,7 @@ impl App {
         match effect {
             Some(crate::studio::Effect::Close) => self.studio_closing = Some(now),
             Some(crate::studio::Effect::Fetch) if !self.studio_fetched => self.fetch_studio_art(),
+            Some(crate::studio::Effect::Write) => self.studio_writing = Some(now as f64),
             Some(crate::studio::Effect::Apply(kind)) if self.studio_apply(kind) => {
                 self.studio_scene = Some(crate::studio::ApplyScene {
                     chosen: kind,
@@ -12848,9 +13185,11 @@ impl App {
             }
         };
         let rest = slot_ui::sticker_curl::Pose::REST;
+        let base = if tex.inked { tex.title } else { tex.bare };
         match stage {
             Stage::Arrive => face(tex.title, -40.0 * (1.0 - p), p, out),
             Stage::Hold => face(tex.title, 0.0, 1.0, out),
+            Stage::Peel | Stage::Toss if tex.inked => face(tex.title, 0.0, 1.0, out),
             Stage::Peel => {
                 face(tex.bare, 0.0, 1.0, out);
                 let q = p * p;
@@ -12869,7 +13208,7 @@ impl App {
                 sticker(tex.title, 0.0, 420.0, pose, out);
             }
             Stage::Fly => {
-                face(tex.bare, 0.0, 1.0, out);
+                face(base, 0.0, 1.0, out);
                 let e = 1.0 - (1.0 - p).powi(3);
                 let pose = slot_ui::sticker_curl::Pose {
                     x: lerp(680.0, 0.0, e),
@@ -12881,7 +13220,7 @@ impl App {
                 sticker(tex.done, 0.0, 150.0, pose, out);
             }
             Stage::Roll => {
-                face(tex.bare, 0.0, 1.0, out);
+                face(base, 0.0, 1.0, out);
                 sticker(tex.done, p, 150.0, rest, out);
             }
             Stage::Rest => face(tex.done, 0.0, 1.0, out),

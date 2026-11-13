@@ -1,4 +1,4 @@
-use slot::studio::{Row, Screen, Studio, Target};
+use slot::studio::{LabelKind, Row, Screen, Studio, Target};
 use slot::studio_view::{layout, view, Align, Item, Style};
 use slot_input::Btn;
 use slot_store::{Cart, Platform};
@@ -12,6 +12,7 @@ fn cart(platform: Platform) -> Cart {
         title: "PROBE".into(),
         code: String::new(),
         shell: None,
+        tags: Vec::new(),
     }
 }
 
@@ -255,15 +256,15 @@ fn an_empty_sheet_of_duplicates_says_so() {
 }
 
 #[test]
-fn a_worn_label_with_nothing_new_shows_the_text_sticker() {
+fn a_worn_label_with_nothing_new_says_so_beside_the_marker() {
     let mut s = gba();
     to_row(&mut s, Row::Label);
     s.press(Btn::A);
     s.duplicates = true;
     s.art_arrived(false, false);
     let items = view(&s, 720.0).items;
-    assert!(!texts(&items).contains(&"No New Labels".to_string()));
-    assert!(items.iter().any(|i| matches!(i, Item::Sheet)));
+    assert!(texts(&items).contains(&"No New Labels".to_string()));
+    assert_eq!(s.sheet, vec![LabelKind::Hand]);
 }
 
 #[test]
@@ -605,4 +606,120 @@ fn the_color_name_clears_the_footer_on_every_layout() {
             assert!(y + 24.0 * scale <= 422.0, "{w} {platform:?}: {y} {scale}");
         }
     }
+}
+
+fn apart(a: &[[f32; 2]; 4], b: &[[f32; 2]; 4]) -> bool {
+    [a, b].iter().any(|quad| {
+        (0..4).any(|i| {
+            let [p, q] = [quad[i], quad[(i + 1) % 4]];
+            let axis = [q[1] - p[1], p[0] - q[0]];
+            let span = |pts: &[[f32; 2]; 4]| {
+                let d: Vec<f32> = pts
+                    .iter()
+                    .map(|v| v[0] * axis[0] + v[1] * axis[1])
+                    .collect();
+                let lo = d.iter().cloned().fold(f32::MAX, f32::min);
+                let hi = d.iter().cloned().fold(f32::MIN, f32::max);
+                (lo, hi)
+            };
+            let (a_lo, a_hi) = span(a);
+            let (b_lo, b_hi) = span(b);
+            a_hi <= b_lo || b_hi <= a_lo
+        })
+    })
+}
+
+#[test]
+fn the_resting_marker_and_cap_touch_nothing() {
+    use slot::studio_view::{layout, marker_rest, tray, turned, CART_TILT};
+    let units = slot_ui::hand::MARKER_H as f32;
+    let [cap_top, cap_end] = slot_ui::hand::MARKER_CAP;
+    for platform in [Platform::Gba, Platform::Gb, Platform::Gbc] {
+        for w in [720.0, 640.0] {
+            let c = cart(platform);
+            let l = layout(w, platform);
+            let t = tray(w, &c);
+            let rest = marker_rest(w, &c);
+            let thick = rest.len * slot_ui::hand::MARKER_W as f32 / units;
+            let unit = rest.len / units;
+            let body = turned(
+                [
+                    rest.at[0] - thick / 2.0,
+                    rest.at[1] - rest.len / 2.0,
+                    thick,
+                    rest.len,
+                ],
+                rest.at,
+                rest.deg,
+            );
+            let cap = turned(
+                [
+                    rest.cap[0] - thick / 2.0,
+                    rest.cap[1] - rest.len / 2.0 + cap_top * unit,
+                    thick,
+                    (cap_end - cap_top) * unit,
+                ],
+                rest.cap,
+                rest.cap_deg,
+            );
+            let centre = [l.cart_x + l.cart_w / 2.0, l.cart_y + l.cart_h / 2.0];
+            let shell = turned([l.cart_x, l.cart_y, l.cart_w, l.cart_h], centre, CART_TILT);
+            let column = [
+                [t.printer_x, 0.0],
+                [w, 0.0],
+                [w, 480.0],
+                [t.printer_x, 480.0],
+            ];
+            assert!(apart(&body, &cap), "{platform:?} {w}: body on cap");
+            for (name, quad) in [("body", &body), ("cap", &cap)] {
+                assert!(apart(quad, &shell), "{platform:?} {w}: {name} on the cart");
+                assert!(
+                    apart(quad, &column),
+                    "{platform:?} {w}: {name} on the labels"
+                );
+                for [x, y] in quad {
+                    assert!(
+                        *x >= 0.0 && *y >= 10.0 && *y <= 414.0,
+                        "{platform:?} {w}: {name} off the mat at {x},{y}"
+                    );
+                }
+            }
+            assert!(
+                rest.len > 150.0,
+                "{platform:?} {w}: marker only {}",
+                rest.len
+            );
+        }
+    }
+}
+
+#[test]
+fn the_empty_printer_note_sits_under_the_printer_clear_of_the_marker() {
+    for platform in [Platform::Gba, Platform::Gb] {
+        for w in [640.0, 720.0] {
+            let mut s = Studio::new(cart(platform), false);
+            s.press(Btn::A);
+            let t = slot::studio_view::tray(w, &s.cart);
+            let x = view(&s, w)
+                .items
+                .iter()
+                .find_map(|i| match i {
+                    Item::Text { text, x, .. } if text == "No Connection" => Some(*x),
+                    _ => None,
+                })
+                .expect("no note");
+            assert_eq!(x, t.printer_x + t.printer_w / 2.0, "{platform:?} at {w}");
+        }
+    }
+}
+
+#[test]
+fn a_worn_label_with_no_art_found_says_there_are_no_other_labels() {
+    let mut s = gba();
+    to_row(&mut s, Row::Label);
+    s.press(Btn::A);
+    s.art_arrived(false, false);
+    let texts = texts(&view(&s, 720.0).items);
+    assert!(texts.contains(&"No Other Labels".to_string()), "{texts:?}");
+    assert!(!texts.contains(&"No Art Found".to_string()));
 }

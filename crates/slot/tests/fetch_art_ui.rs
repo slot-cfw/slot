@@ -716,3 +716,67 @@ fn b_stops_fetch_box_art() {
     press(&mut a, Btn::B);
     assert_eq!(art.asked(), vec![ArtJob::FetchBoxArt, ArtJob::Cancel]);
 }
+
+#[test]
+fn a_handwritten_cart_keeps_its_ink_and_skips_the_peel() {
+    use slot_gfx::{Draw, TexId};
+    let (_d, mut a, art) = running();
+    art.send(&mut a, ArtEvent::Counted(1));
+    art.send(&mut a, landed("Emerald"));
+    a.tick_ms(a.now() + 1);
+    let (title, bare, done) = (
+        TexId::from_raw(60),
+        TexId::from_raw(61),
+        TexId::from_raw(62),
+    );
+    a.set_fetch_tex(
+        Platform::Gba,
+        "Emerald",
+        slot::fetch_art::FetchTex {
+            title,
+            bare,
+            done,
+            under: None,
+            w: 372,
+            h: 209,
+            inked: true,
+        },
+    );
+    for stage in [Stage::Peel, Stage::Toss, Stage::Fly, Stage::Roll] {
+        let start = match a.fetch_art() {
+            Some(FetchArt::Running(run)) => run.scene.as_ref().unwrap().started_ms,
+            _ => panic!("no scene"),
+        };
+        let at = start + slot::fetch_art::stage_start(stage) + 20.0;
+        a.tick_ms(at as u64);
+        let mut out = Vec::new();
+        a.draw(&mut out);
+        let peeled = out
+            .iter()
+            .any(|d| matches!(d, Draw::Quad { tex, .. } if *tex == title));
+        assert!(!peeled, "{stage:?} peels the ink");
+        let faces: Vec<TexId> = out
+            .iter()
+            .filter_map(|d| match d {
+                Draw::Tex { tex, .. } if [title, bare].contains(tex) => Some(*tex),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(faces, vec![title], "{stage:?} shows {faces:?}");
+    }
+}
+
+#[test]
+fn the_faces_of_a_cart_with_no_label_say_they_are_handwritten() {
+    let cart = slot_store::Cart {
+        platform: Platform::Gba,
+        stem: "Metroid Fusion".into(),
+        rom: PathBuf::from("Games/GBA/Metroid Fusion.gba"),
+        label: Some(PathBuf::from("Labels/GBA/Metroid Fusion.png")),
+        code: String::new(),
+        shell: None,
+        title: "METROID FUSION".into(),
+        tags: Vec::new(),
+    };
+    assert!(slot::fetch_faces::faces_for(&cart).inked);
+}

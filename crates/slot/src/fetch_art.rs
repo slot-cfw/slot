@@ -201,6 +201,7 @@ pub struct FetchTex {
     pub under: Option<[slot_ui::TexId; 2]>,
     pub w: u32,
     pub h: u32,
+    pub inked: bool,
 }
 
 pub fn choice_xs(canvas_w: f32) -> [f32; 2] {

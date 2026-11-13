@@ -299,6 +299,11 @@ fn main() {
     if script.lines().any(|line| line.trim() == "# wifi") {
         connect(frontend.app_mut());
     }
+    if script.lines().any(|line| line.trim() == "# offline") {
+        frontend
+            .app_mut()
+            .set_wifi(slot::wifi::Wifi::inline(Box::new(slot::wifi::Fake::demo())));
+    }
 
     let mut input = Scripted::default();
     let lit = frontend.app().brightness().max(1);
